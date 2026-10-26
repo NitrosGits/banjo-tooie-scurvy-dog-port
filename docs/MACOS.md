@@ -67,7 +67,7 @@ python3 tools/baseline/verify_baseline_binding.py qualify --format macho \
   --build build/windows-dev \
   --raw build/windows-dev/baseline/render-bridge-camera-candidate/composition-v2/raw \
   --archive build/windows-dev/libBaselineRecompiledFuncs.a \
-  --tools "$(dirname "$(xcrun --find llvm-objdump)")" \
+  --tools "$(sed -n 's/^TOOIE_BASELINE_MACHO_TOOLS_DIR:[A-Z]*=//p' build/windows-dev/CMakeCache.txt)" \
   --snapshot build/windows-dev/baseline/raw-qualification/qualified.json \
   --expected-count 416 \
   --evidence build/windows-dev/raw-qualification-input/evidence.json \
@@ -77,7 +77,8 @@ python3 tools/baseline/verify_baseline_binding.py qualify --format macho \
 
 The Mach-O gates (`tools/baseline/macho_binding.py`) mirror the ELF ones: BSD `ar` members, ld64 `-map`
 ownership, `llvm-objdump` relocations and direct `bl`/`b` branches. The qualification records the
-objdump's hash, so a new Xcode needs a fresh qualification.
+objdump's path and hash, so `--tools` must be the same directory the preset names (the command above reads it
+from the configured cache) and a new Xcode needs a fresh qualification.
 
 ## 4. Build and run
 
@@ -104,7 +105,12 @@ equals the selected one. `BaselinePlayerStartupTest` is an optional target.
   shutdown deadlocked about half the time. Verified by repeated 20 and 60 second runs; keyboard, controller and
   window-close behaviour have not been tested by hand.
 - **Profile folder:** macOS has no path for a held directory descriptor, so the profile is reached by the
-  path it was opened under; moving the folder while the game runs is not followed (Linux and Windows are).
+  path it was opened under. If the folder is moved and another is put at the same path while the game runs,
+  runtime writes through `storage()` land in the replacement; Linux and Windows guarantee they cannot.
+- **Untested by hand:** that a picture appears, keyboard and controller input, sound, closing the window, and
+  launching with no arguments. Bounded runs (`--seconds`) start, run the game and exit cleanly.
+- **CI:** `.github/workflows/platform-checks.yml` runs the repository checks and the player startup test
+  (`tools/ci/startup_test.sh`) on Linux and macOS. It cannot build the player: that needs your ROM.
 - **Distribution:** the executable links Homebrew's dynamic libraries; there is no `.app`, bundling or signing yet.
 - **Compiler hash:** `.comment` build paths differ between the Linux and Windows LLVM builds, so Linux guest
   objects are normalized to the Windows identity (`tools/guest_llvm.py`); this is what keeps the object pins valid.

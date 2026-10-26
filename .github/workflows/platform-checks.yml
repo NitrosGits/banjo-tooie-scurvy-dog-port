@@ -1,0 +1,28 @@
+name: Linux and macOS platform checks
+# ROM-free. A full player build needs the user's ROM and the generated source, so CI covers what it can:
+# the repository checks and the POSIX player startup test, compiled and run natively on each OS.
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake libsdl2-dev libdbus-1-dev pkg-config
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake sdl2
+      - name: Repository checks
+        run: python3 tools/check_repository.py
+      - name: Fetch the pinned RT64 checkout (for nativefiledialog-extended)
+        run: python3 tools/bootstrap_dependencies.py --only rt64
+      - name: Build and run the player startup test
+        run: tools/ci/startup_test.sh
