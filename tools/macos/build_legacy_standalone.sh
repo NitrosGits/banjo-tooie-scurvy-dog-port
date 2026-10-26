@@ -33,6 +33,8 @@ if [ "$actual" != "$pin" ]; then
     echo "legacy standalone boot.bin is $actual, expected $pin" >&2
     exit 1
 fi
+# On Linux hosts the container writes as root; hand the tree back so it can be copied and removed.
+docker run --rm -v "$tree:/work" tooie-codegen:ubuntu24.04 chown -R "$(id -u):$(id -g)" /work
 cp -R "$silo" "$out"
 git -C "$root" worktree remove --force "$tree"
 echo "legacy standalone directory ready: $out"
