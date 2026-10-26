@@ -111,6 +111,8 @@ equals the selected one. `BaselinePlayerStartupTest` is an optional target.
   launching with no arguments. Bounded runs (`--seconds`) start, run the game and exit cleanly.
 - **CI:** `.github/workflows/platform-checks.yml` runs the repository checks and the player startup test
   (`tools/ci/startup_test.sh`) on Linux and macOS. It cannot build the player: that needs your ROM.
+  `.github/workflows/full-build.yml` (manual) runs this whole guide from a `ROM_URL` secret: code generation on
+  Linux, then the gated macOS build, handing the ROM-derived files over as an encrypted artifact (`ARTIFACT_KEY`).
 - **Distribution:** the executable links Homebrew's dynamic libraries; there is no `.app`, bundling or signing yet.
 - **Compiler hash:** `.comment` build paths differ between the Linux and Windows LLVM builds, so Linux guest
   objects are normalized to the Windows identity (`tools/guest_llvm.py`); this is what keeps the object pins valid.

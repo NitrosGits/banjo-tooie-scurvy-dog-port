@@ -1,0 +1,88 @@
+name: Full build
+# Manual only. Needs repository secrets, which workflows from forks do not receive. Anything derived from the
+# downloaded input stays inside the jobs, except the hand-off between them, which is encrypted with ARTIFACT_KEY:
+# artifacts of a public repository can be downloaded by anyone.
+on: workflow_dispatch
+permissions:
+  contents: read
+env:
+  ROM_SHA256: 9ec37fba6890362eba86fb855697a9cff1519275531b172083a1a6a045483583
+jobs:
+  generate:
+    name: Code generation and guest image (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Fetch and check the input
+        env:
+          ROM_URL: ${{ secrets.ROM_URL }}
+        run: |
+          curl -fsSL -A "Mozilla/5.0" -o baserom.us.z64 "$ROM_URL"
+          echo "${ROM_SHA256}  baserom.us.z64" | sha256sum -c -
+      - name: Generate local source
+        run: tools/macos/codegen.sh python3 tools/generate_local.py --rom baserom.us.z64 --jobs "$(nproc)"
+      - name: Rebuild the legacy standalone Silo directory
+        run: tools/macos/build_legacy_standalone.sh
+      - name: Prepare the player guest image
+        run: |
+          tools/macos/codegen.sh .venv-codegen/bin/python tools/baseline/prepare_player_guest.py \
+            --rom baserom.us.z64 --legacy-standalone-dir local/legacy-silo-candidate
+      - name: Pack and encrypt the hand-off
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          test -n "$ARTIFACT_KEY"
+          python3 tools/ci/pack_codegen.py | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:ARTIFACT_KEY -out codegen.tar.gz.enc
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codegen-encrypted
+          path: codegen.tar.gz.enc
+          retention-days: 1
+
+  macos:
+    name: macOS arm64 player (gated build)
+    needs: generate
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: codegen-encrypted
+      - name: Install build dependencies
+        run: brew install cmake ninja sdl2 openssl@3
+      - name: Fetch pinned dependencies
+        run: python3 tools/bootstrap_dependencies.py --only rt64 --only n64modernruntime --only llvm_linux --platform linux
+      - name: Unpack the code generation hand-off
+        env:
+          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:ARTIFACT_KEY -in codegen.tar.gz.enc | tar xz
+          rm codegen.tar.gz.enc
+      - name: Configure
+        run: |
+          cmake --preset macos-player \
+            -DTOOIE_BASELINE_MACHO_TOOLS_DIR="$(dirname "$(xcrun --find llvm-objdump)")"
+      - name: Compile the raw archive
+        run: |
+          mkdir -p build/windows-dev/raw-qualification-input
+          cmake --build build/windows-dev --target BaselineRecompiledFuncs librecomp ultramodern rt64 \
+            > build/windows-dev/raw-qualification-input/compile.log 2>&1
+      - name: Qualify the raw archive
+        run: |
+          SHA=$(python3 tools/macos/collect_raw_evidence.py)
+          python3 tools/baseline/verify_baseline_binding.py qualify --format macho \
+            --build build/windows-dev \
+            --raw build/windows-dev/baseline/render-bridge-camera-candidate/composition-v2/raw \
+            --archive build/windows-dev/libBaselineRecompiledFuncs.a \
+            --tools "$(sed -n 's/^TOOIE_BASELINE_MACHO_TOOLS_DIR:[A-Z]*=//p' build/windows-dev/CMakeCache.txt)" \
+            --snapshot build/windows-dev/baseline/raw-qualification/qualified.json \
+            --expected-count 416 \
+            --evidence build/windows-dev/raw-qualification-input/evidence.json \
+            --compile-log build/windows-dev/raw-qualification-input/compile.log \
+            --accepted-archive-sha "$SHA"
+      - name: Build the player (archive, native hook and guest gates run here)
+        run: cmake --build --preset macos-player
+      - name: Player startup test
+        run: tools/ci/startup_test.sh

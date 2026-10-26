@@ -198,8 +198,10 @@ def install_archive(name: str, spec: dict[str, object], deps: pathlib.Path,
     print(f"installed {name}: {spec['sha256']}")
 
 
-def platform_matches(spec: dict[str, object]) -> bool:
+def platform_matches(spec: dict[str, object], forced: str | None = None) -> bool:
     wanted = spec.get("platform")
+    if forced:
+        return wanted is None or wanted == forced
     return wanted is None or (wanted == "windows" and os.name == "nt") or (
         wanted == "linux" and sys.platform.startswith("linux"))
 
@@ -211,6 +213,8 @@ def main() -> int:
     parser.add_argument("--only", action="append", default=[], metavar="NAME")
     parser.add_argument("--with-windows-toolchain", action="store_true",
                         help="also download the optional pinned LLVM 19.1.3 Windows archive")
+    parser.add_argument("--platform", choices=("windows", "linux"),
+                        help="fetch this platform's tool archives instead of the host's (the macOS build checks the Linux LLVM hashes)")
     parser.add_argument("--verify", action="store_true", help="perform no network or filesystem writes")
     args = parser.parse_args()
     lock = json.loads(LOCK.read_text(encoding="utf-8"))
@@ -222,7 +226,7 @@ def main() -> int:
     for name, spec in dependencies.items():
         if spec.get("reference_only") and not args.only:
             continue
-        if name not in selected or not platform_matches(spec):
+        if name not in selected or not platform_matches(spec, args.platform):
             continue
         if spec.get("optional_group") == "windows-toolchain" and not args.with_windows_toolchain:
             continue
