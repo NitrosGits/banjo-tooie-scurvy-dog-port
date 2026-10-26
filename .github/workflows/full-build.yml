@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0  # the legacy standalone rebuild checks out commit 61caf07
       - name: Fetch and check the input
         env:
           ROM_URL: ${{ secrets.ROM_URL }}
