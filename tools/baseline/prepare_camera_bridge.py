@@ -97,7 +97,7 @@ def prepare_honey_containment(root, output, run, npc665=False, backpack621=False
     # Stage the unchanged maintained source under the established object source name.
     staged=output/'camera_honey_bridge.c'
     staged.write_bytes(source.read_bytes())
-    compiler=root/'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe'
+    compiler=accepted.guest_llvm.tool(root,'clang')
     includes=[root/'tools/baseline/guest/silo-candidate',root/'tools/baseline/guest',root/'deps/banjo-tooie/include',root/'deps/banjo-tooie/lib/ultralib/include',root/'deps/rt64/include']
     flags=[compiler,'-target','mips','-EB','-mips2','-mabi=32','-O2','-G0','-mno-abicalls','-mno-odd-spreg','-nostdinc','-D_LANGUAGE_C','-DMIPS','-fno-builtin']+['-I'+win(p) for p in includes]+['-I'+win(root/SOURCE)]
     flags+=['-DTOOIE_NPC665='+str(int(npc665)),'-DTOOIE_BACKPACK621='+str(int(backpack621)),'-DTOOIE_TROT_TOGGLE='+str(int(talon_trot_toggle)),'-DTOOIE_CAMERA_HONEY=1','-DTOOIE_BRIDGE_REQUIRED_STOP='+str(int(required_stop))]
@@ -504,7 +504,7 @@ def write_registry_header(root,output,actor_palette,demo,shadow,pre,cpu=None,hos
 
 def image_flags(root,pre_background,cpu625,npc665,backpack621,talon_trot_toggle=False):
     """Exact guest compile flags shared by the image and its same-selection 621OFF carrier."""
-    compiler=root/'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe';flags=[compiler,'-target','mips','-EB','-mips2','-mabi=32','-O2','-G0','-mno-abicalls','-mno-odd-spreg','-nostdinc','-D_LANGUAGE_C','-DMIPS','-fno-builtin']+(['-DTOOIE_PRE_BACKGROUND=1'] if pre_background else [])+['-I'+win(p) for p in [root/SOURCE,root/'tools/baseline/guest',root/'deps/banjo-tooie/include',root/'deps/banjo-tooie/lib/ultralib/include',root/'deps/rt64/include']]
+    compiler=accepted.guest_llvm.tool(root,'clang');flags=[compiler,'-target','mips','-EB','-mips2','-mabi=32','-O2','-G0','-mno-abicalls','-mno-odd-spreg','-nostdinc','-D_LANGUAGE_C','-DMIPS','-fno-builtin']+(['-DTOOIE_PRE_BACKGROUND=1'] if pre_background else [])+['-I'+win(p) for p in [root/SOURCE,root/'tools/baseline/guest',root/'deps/banjo-tooie/include',root/'deps/banjo-tooie/lib/ultralib/include',root/'deps/rt64/include']]
     return compiler,flags+['-DTOOIE_CPU625='+str(int(cpu625)),'-DTOOIE_NPC665='+str(int(npc665)),'-DTOOIE_BACKPACK621='+str(int(backpack621)),'-DTOOIE_TROT_TOGGLE='+str(int(talon_trot_toggle))]
 
 def compile_backpack621_carrier(root,output,run,actor_palette,pre_background,cpu625,npc665,ckpack_copy_storage=False):
@@ -712,7 +712,7 @@ def prepare_image(root,output,run,actor_palette=False,demo_timing=False,shadow_f
     if player_secondary:base_functions+=held.SECONDARY_HELPERS
     if bk_pipeline:base_functions+=held.BK_HELPERS
     inputs=[heap/'boot.o',heap/'core1.o',r/'generated/heap-patch-products/heap.o',honey]+[out/(n+'.o') for n in ['player']+(['secondary'] if player_secondary else [])+(['bk'] if bk_pipeline else [])+['actor','bone','pair','silo','leaf','lifecycle']]+[out/(n+'.o') for n in objects]
-    run([compiler.parent/'ld.lld.exe','-m','elf32btsmip','-T',win(source/'render_bridge.ld'),'--unresolved-symbols=ignore-all','--emit-relocs','--orphan-handling=error']+[win(p) for p in inputs]+['-o',win(out/'boot.elf')],'link.log')
+    run([*accepted.guest_llvm.linker(r),'-m','elf32btsmip','-T',win(source/'render_bridge.ld'),'--unresolved-symbols=ignore-all','--emit-relocs','--orphan-handling=error']+[win(p) for p in inputs]+['-o',win(out/'boot.elf')],'link.log')
     with (out/'boot.elf').open('rb') as stream:
      elf=ELFFile(stream);symbols={s.name:s for s in elf.get_section_by_name('.symtab').iter_symbols() if s.name};state=elf.get_section_by_name('.tooie_camera_state');pools=elf.get_section_by_name('.tooie_camera_pools');oldstate=elf.get_section_by_name('.tooie_render_bridge_state')
      if demo_timing:

@@ -123,7 +123,8 @@ def safe_archive_members(names: list[str]) -> None:
             raise RuntimeError(f"Unsafe archive member: {name}")
 
 
-def unpack_archive(archive: pathlib.Path, destination: pathlib.Path, strip_components: int) -> None:
+def unpack_archive(archive: pathlib.Path, destination: pathlib.Path, strip_components: int,
+                   omit_links: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="tooie-dependency-", dir=destination.parent) as temp_name:
         temp = pathlib.Path(temp_name)
         if zipfile.is_zipfile(archive):
@@ -134,9 +135,12 @@ def unpack_archive(archive: pathlib.Path, destination: pathlib.Path, strip_compo
             with tarfile.open(archive, "r:*") as bundle:
                 members = bundle.getmembers()
                 safe_archive_members([member.name for member in members])
+                if omit_links:
+                    # Links are never materialized; callers name real files only.
+                    members = [member for member in members if not (member.issym() or member.islnk())]
                 if any(member.issym() or member.islnk() for member in members):
                     raise RuntimeError(f"Archive contains links and is not accepted: {archive}")
-                bundle.extractall(temp)
+                bundle.extractall(temp, members=members)
         source = temp
         for _ in range(strip_components):
             entries = [entry for entry in source.iterdir()]
@@ -185,7 +189,8 @@ def install_archive(name: str, spec: dict[str, object], deps: pathlib.Path,
     if actual != spec["sha256"]:
         raise RuntimeError(f"{name}: expected archive SHA-256 {spec['sha256']}, found {actual}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    unpack_archive(archive, target, int(spec.get("strip_components", 0)))
+    unpack_archive(archive, target, int(spec.get("strip_components", 0)),
+                   bool(spec.get("omit_links", False)))
     archive_marker(target).write_text(json.dumps({
         "name": name, "url": spec["url"], "sha256": spec["sha256"]
     }, indent=2) + "\n", encoding="utf-8")

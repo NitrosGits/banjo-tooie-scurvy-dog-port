@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 
+import guest_llvm
+
 RECEIPT = 'codegen-receipt.json'
 REQUIRED_INPUTS = tuple('tools/' + name + '.py' for name in (
     'prepare_codegen', 'compile_current_codegen', 'codegen_provenance', 'codegen_io',
@@ -22,9 +24,8 @@ REQUIRED_INPUTS = tuple('tools/' + name + '.py' for name in (
     'patches/render_wrapper/guest/production/model_nodes.c',
     'patches/render_wrapper/guest/production/player_release.c',
     'patches/game/native_aspect_projection.c', 'patches/game/widescreen_settings_abi.h',
-    'src/boot_hooks.h',
-    'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe',
-    'deps/LLVM-19.1.3-Windows-X64/bin/ld.lld.exe')
+    'src/boot_hooks.h', 'tools/guest_llvm.py',
+    guest_llvm.TOOLS['clang'], guest_llvm.TOOLS['lld'])
 
 
 def sha(path):

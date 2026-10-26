@@ -1,12 +1,12 @@
 """Prepare the qualified finite rendering replacements through one pipeline."""
 from pathlib import Path
 import json
-import os
 import re
 import subprocess
 import toml
 from elftools.elf.elffile import ELFFile
 from codegen_provenance import generated_directory, sha
+import guest_llvm
 from render_wrapper_contract import (
     CALLEES, HEAP_DATA, HUD_LITERALS, HUD_LINKED_LITERALS, REPLACEMENTS,
     RENDER_STORAGE, NATIVE_IMPORTS, ORIGINAL_REFERENCES, OBJECT_CONTRACTS,
@@ -17,10 +17,7 @@ from verify_render_wrapper_image import verify as verify_image
 
 
 def windows_path(path):
-    path = Path(path).resolve()
-    if os.name == 'nt':
-        return str(path)
-    return subprocess.check_output(['wslpath', '-w', str(path)], text=True).strip()
+    return guest_llvm.host_path(Path(path).resolve())
 
 
 def prepare_heap_patch(app, executable, selected, elf_path, evidence, generated_dir=None):
@@ -79,11 +76,11 @@ def prepare_heap_patch(app, executable, selected, elf_path, evidence, generated_
         command = [str(arg) for arg in command]
         commands.append(dict(name=name, argv=command))
         with (log_dir / name).open('w') as output:
-            subprocess.run(command, cwd=app, stdout=output, stderr=subprocess.STDOUT, check=True)
+            guest_llvm.run_guest(command, cwd=app, stdout=output, stderr=subprocess.STDOUT)
 
-    clang = app / 'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe'
-    linker = clang.with_name('ld.lld.exe')
-    objcopy = clang.with_name('llvm-objcopy.exe')
+    clang = guest_llvm.tool(app, 'clang')
+    linker = guest_llvm.linker(app)
+    objcopy = guest_llvm.tool(app, 'objcopy')
     object_facts = []
     for row in OBJECT_CONTRACTS:
         stem = row['stem']
@@ -114,15 +111,13 @@ def prepare_heap_patch(app, executable, selected, elf_path, evidence, generated_
         dependency_text = (raw / (stem + '.d')).read_text().replace('\\\n', '').split(':', 1)[1]
         for token in re.findall(r'(?:\\.|[^\s])+', dependency_text):
             token = token.replace('\\ ', ' ').replace('\\\\', '\\')
-            dependency = Path(token) if os.name == 'nt' else Path(subprocess.check_output(
-                ['wslpath', '-u', token], text=True).strip())
-            dependency = dependency.resolve()
+            dependency = guest_llvm.from_host_path(token).resolve()
             if dependency not in initial:
                 raise ValueError(f'unexpected guest header dependency: {dependency}')
             if dependency not in inputs:
                 inputs.append(dependency)
 
-    run([linker, '-m', 'elf32btsmip', '-T', windows_path(app / 'patches/game/heap.ld'),
+    run([*linker, '-m', 'elf32btsmip', '-T', windows_path(app / 'patches/game/heap.ld'),
          '--unresolved-symbols=ignore-all', '--emit-relocs', '--orphan-handling=error',
          *[windows_path(raw / (row['stem'] + '.o')) for row in OBJECT_CONTRACTS],
          '-o', windows_path(raw / 'heap.elf')], 'heap-link.log')

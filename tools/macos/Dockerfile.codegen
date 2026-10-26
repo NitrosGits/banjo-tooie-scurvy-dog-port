@@ -1,0 +1,13 @@
+# Linux x86_64 environment for tools/generate_local.py on macOS hosts.
+# The pinned IDO, GCC 2.7.2 and binutils archives are x86_64 Linux binaries,
+# so build and run this image as linux/amd64 (codegen.sh passes --platform).
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential binutils-mips-linux-gnu gcc-mips-linux-gnu \
+        cmake ninja-build git python3 python3-venv python3-pip \
+        libfmt-dev libtoml11-dev zlib1g-dev wget tar ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# The checkout is bind-mounted with the host user's ownership.
+RUN git config --system --add safe.directory '*'
+WORKDIR /work

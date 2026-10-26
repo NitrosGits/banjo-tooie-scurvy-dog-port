@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Sequence
 
+import guest_llvm
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ROM_SHA256 = "9ec37fba6890362eba86fb855697a9cff1519275531b172083a1a6a045483583"
@@ -122,6 +124,11 @@ def main() -> int:
     dependency_keys = ["banjo_tooie_decomp", "n64recomp_codegen", "ido_53_linux",
                        "mips_binutils_26_linux", "mips_gcc_272_linux",
                        "mips_binutils_27_linux"]
+    if not guest_llvm.WINDOWS_TOOLCHAIN:
+        # Off WSL the heap patch is compiled with the Linux LLVM release.
+        dependency_keys.append("llvm_linux")
+        # Guest patch sources include RT64's headers; the Windows guide fetches rt64 in step 1.
+        dependency_keys.append("rt64")
     bootstrap_command: list[object] = [sys.executable, ROOT / "tools/bootstrap_dependencies.py",
                                        "--deps-dir", deps]
     for key in dependency_keys:

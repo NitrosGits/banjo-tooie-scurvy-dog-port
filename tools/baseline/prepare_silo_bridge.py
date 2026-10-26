@@ -96,8 +96,7 @@ def compile_objects(root, output, run, cpu_root=False, cpu625=False, lifecycle_o
     assert not hand862 or (cpu_root and backpack621), 'Hand862 is compiled only into the selected actor-palette 621 composition'
     assert honey_reference is None or type(honey_reference) is str
     source = root/'tools/baseline/guest/silo-candidate'
-    compiler = root/'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe'
-    assert sha(compiler) == '6ac72dac3eb54eb7f807b0c4428c8a61cf73fe77d00be8aec8bc07ab94cdcf23'
+    compiler = accepted.guest_llvm.pinned(root, 'clang')
     assert sha(source/'render_bridge.c') == sha(root/'tools/baseline/guest/render_bridge.c')
     includes = [source, root/'deps/banjo-tooie/include', root/'deps/banjo-tooie/lib/ultralib/include', root/'deps/rt64/include']
     flags = [compiler, '-target', 'mips', '-EB', '-mips2', '-mabi=32', '-O2', '-G0',
@@ -238,16 +237,22 @@ def compile_objects(root, output, run, cpu_root=False, cpu625=False, lifecycle_o
                 frames[function] = max((0x10000-v for v in adjustments if v & 0x8000), default=0)
             if name == 'bone' and not npc665 and not backpack621:
                 assert frames=={'func_800DCF48':48, HELPER:56}, ('exact measured object frames',frames)
-                assert sha(obj)=='7356a8f35224811c6fc8f5b730988fac05a003ca1d94c852dd174b0ef4dcf8a3', 'measured bone object changed'
                 helper=syms[HELPER]; assert helper['st_info']['bind']=='STB_GLOBAL'
                 code=elf.get_section(helper['st_shndx']).data()[helper['st_value']:helper['st_value']+helper['st_size']]
-                assert __import__('hashlib').sha256(code).hexdigest()=='eb5c7f47930974014df369080ef90cd7b731aa9d06e9724d520ff0c3fa216fd9', 'retained Silo helper body changed'
                 prologues=[i for i in range(0,len(code),4) if int.from_bytes(code[i:i+4],'big')==0x27BDFFC8]
-                assert prologues==[0x1C0], ('helper shrinkwrapped frame',prologues)
+                if honey_reference:
+                    # Measurements of the historical standalone Silo composition. The maintained player recipe
+                    # (--no-prior-honey) skips them: bone_handler.c changed after they were taken (Alpha 4.4)
+                    # and the camera image pin binds the result instead.
+                    assert sha(obj)=='7356a8f35224811c6fc8f5b730988fac05a003ca1d94c852dd174b0ef4dcf8a3', 'measured bone object changed'
+                    assert __import__('hashlib').sha256(code).hexdigest()=='eb5c7f47930974014df369080ef90cd7b731aa9d06e9724d520ff0c3fa216fd9', 'retained Silo helper body changed'
+                    assert prologues==[0x1C0], ('helper shrinkwrapped frame',prologues)
+                assert len(prologues)==1, ('helper shrinkwrapped frame',prologues)
                 calls=[r for r in relocations(elf) if r[2]==HELPER]
                 assert len(calls)==1 and calls[0][1:]==(4,HELPER), ('sole direct helper JAL',calls)
             receipt[name] = dict(sha256=sha(obj), definitions=actual, imports=sorted(imports),text_bytes=len(text))
             receipt[name]['frames'] = frames
+            if name == 'bone' and not npc665 and not backpack621: receipt[name]['helper_prologue_offset'] = prologues[0]
             receipt[name]['compile_argv']=[str(x) for x in command]
             if name == 'pair': receipt[name]['pair_boundary_JAL_sites'] = [c[0] for c in calls]
     (output/'OBJECT_BINDING.json').write_text(json.dumps(receipt,indent=2)+'\n')
@@ -259,9 +264,8 @@ def image(root, output, run, honey_reference=HONEY_REFERENCE):
     object_receipt=compile_objects(root,output,run,honey_reference=honey_reference)
     heap=root/'build/windows-dev/baseline/heap-patch'
     objects=[heap/'boot.o',heap/'core1.o',root/'generated/heap-patch-products/heap.o']+[output/(n+'.o') for n in ('bridge','player','actor','bone','pair','silo','leaf','lifecycle')]
-    linker=root/'deps/LLVM-19.1.3-Windows-X64/bin/ld.lld.exe'
-    assert sha(linker)=='91da6d00511f43b86c8f9800888e6c66939a864e860bfda6594c1c186fd97a77'
-    run([linker,'-m','elf32btsmip','-T',win(source/'render_bridge.ld'),'--unresolved-symbols=ignore-all','--emit-relocs','--orphan-handling=error']+
+    linker=accepted.guest_llvm.linker(root,check=True)
+    run([*linker,'-m','elf32btsmip','-T',win(source/'render_bridge.ld'),'--unresolved-symbols=ignore-all','--emit-relocs','--orphan-handling=error']+
         [win(p) for p in objects]+['-o',win(output/'boot.elf')], 'bridge-link.log')
     with (output/'boot.elf').open('rb') as stream:
         elf=ELFFile(stream); syms=symbols(elf)
@@ -333,7 +337,7 @@ def image(root, output, run, honey_reference=HONEY_REFERENCE):
     header='#pragma once\n#define TOOIE_BRIDGE_STATE_VRAM 0x%08Xu\n#define TOOIE_BRIDGE_IMAGE_BYTES %du\n#define TOOIE_BRIDGE_STATE_IMAGE_OFFSET %du\n'%(state_vram,len(binary),state_vram-0x80801000)
     (output/'render_bridge_layout.h').write_text(header)
     receipt=dict(condition='BASELINE-SILO-GUEST-HELD-CANDIDATE',state_vram=state_vram,state_bytes=23036,prefix_bytes=2760,
-        definitions=FUNCTIONS,helper_definitions=HELPERS,raw_omissions=FUNCTIONS[3:],helper_frame_bytes=frames[HELPER],helper_prologue_offset=0x1C0,bone_frame_bytes=frames['func_800DCF48'],leaf_frame_bytes=frames['func_800DD998'],pair_frames={n:frames[n] for n in PAIR},player_frames={n:frames[n] for n in PLAYER_HELPERS},actor_frames={n:frames[n] for n in ACTOR_HELPERS},lifecycle_frames={n:frames[n] for n in LIFECYCLE_FUNCTIONS},frames=frames,
+        definitions=FUNCTIONS,helper_definitions=HELPERS,raw_omissions=FUNCTIONS[3:],helper_frame_bytes=frames[HELPER],helper_prologue_offset=object_receipt['bone'].get('helper_prologue_offset',0x1C0),bone_frame_bytes=frames['func_800DCF48'],leaf_frame_bytes=frames['func_800DD998'],pair_frames={n:frames[n] for n in PAIR},player_frames={n:frames[n] for n in PLAYER_HELPERS},actor_frames={n:frames[n] for n in ACTOR_HELPERS},lifecycle_frames={n:frames[n] for n in LIFECYCLE_FUNCTIONS},frames=frames,
         honey_reference=honey_reference,honey_object_text_relocations_identical=bool(honey_reference),honey_linked_text_only_state_HI_LO=bool(honey_reference),
         object_binding_sha256=sha(output/'OBJECT_BINDING.json'),inputs={str(p):sha(p) for p in objects+list(source.iterdir()) if p.is_file()},
         outputs={p.name:sha(p) for p in output.iterdir() if p.is_file()})
@@ -348,7 +352,7 @@ def main():
     root=args.root.resolve();output=root/'build/windows-dev/baseline/render-bridge-silo-candidate';output.mkdir(exist_ok=True)
     assert sha(root/'deps/N64Recomp-codegen/build/N64Recomp')=='34958d6ae8c047adb772090c75fdcc051036646a1db58595694f814c3a4a09b6'
     def run(command,label):
-        with (output/label).open('w') as log:subprocess.run(list(map(str,command)),cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
+        with (output/label).open('w') as log:accepted.guest_llvm.run_guest(command,cwd=root,stdout=log,stderr=subprocess.STDOUT)
     if args.raw:
         accepted.FUNCTIONS=FUNCTIONS;accepted.OMISSIONS=FUNCTIONS[3:];accepted.PAIR_FUNCTIONS=PAIR+SETTERS
         receipt=accepted.prepare_raw(root,output,run);(output/'RAW_BINDING.json').write_text(json.dumps(receipt,indent=2)+'\n');print('raw',sha(output/'RAW_BINDING.json'))

@@ -8,11 +8,15 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import toml
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import guest_llvm
 
 sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
 PREFIX = 2760
@@ -56,7 +60,7 @@ PAIR_CALLEES = {'func_800DF47C', 'func_801027F4', 'func_801018D8', 'func_8010347
 
 
 def win(path):
-    return subprocess.check_output(['wslpath', '-w', str(path)], text=True).strip()
+    return guest_llvm.host_path(path)
 
 
 def bodies(directory):
@@ -185,10 +189,8 @@ def prove_s1_image(root, new_path, pair_bytes):
 
 def prepare_image(root, output, run):
     source = root / 'tools/baseline/guest'
-    compiler = root / 'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe'
-    linker = compiler.parent / 'ld.lld.exe'
-    assert sha(compiler) == '6ac72dac3eb54eb7f807b0c4428c8a61cf73fe77d00be8aec8bc07ab94cdcf23'
-    assert sha(linker) == '91da6d00511f43b86c8f9800888e6c66939a864e860bfda6594c1c186fd97a77'
+    compiler = guest_llvm.pinned(root, 'clang')
+    linker = guest_llvm.linker(root, check=True)
     includes = [source, root/'deps/banjo-tooie/include', root/'deps/banjo-tooie/lib/ultralib/include', root/'deps/rt64/include']
     compile_flags = [compiler, '-target', 'mips', '-EB', '-mips2', '-mabi=32', '-O2', '-G0',
          '-mno-abicalls', '-mno-odd-spreg', '-nostdinc', '-D_LANGUAGE_C', '-DMIPS',
@@ -246,7 +248,7 @@ def prepare_image(root, output, run):
         assert len(pair_jals) == 1 and pair_jals[0]['r_info_type'] == 4, 'pair boundary R_MIPS_26'
         jump_offset = pair_jals[0]['r_offset']
         assert int.from_bytes(pair_text[jump_offset:jump_offset+4], 'big') >> 26 == 3, 'pair boundary must be JAL, not tail J'
-    run([linker, '-m', 'elf32btsmip', '-T', win(source/'render_bridge.ld'),
+    run([*linker, '-m', 'elf32btsmip', '-T', win(source/'render_bridge.ld'),
          '--unresolved-symbols=ignore-all', '--emit-relocs', '--orphan-handling=error'] +
         [win(p) for p in objects] + ['-o', win(output/'boot.elf')], 'bridge-link.log')
     image_proof = prove_s1_image(root, output/'boot.elf', pair_bytes)
@@ -351,7 +353,7 @@ def main():
     generator=root/'deps/N64Recomp-codegen/build/N64Recomp'
     assert sha(generator)=='34958d6ae8c047adb772090c75fdcc051036646a1db58595694f814c3a4a09b6'
     def run(command,label):
-        with (output/label).open('w') as log:subprocess.run(list(map(str,command)),cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
+        with (output/label).open('w') as log:guest_llvm.run_guest(command,cwd=root,stdout=log,stderr=subprocess.STDOUT)
     if args.camera:
         import prepare_camera_bridge
         prepare_camera_bridge.prepare(root,output,run,args.raw,args.image,actor_palette=args.actor_palette,shadow_observer=args.shadow_observer,demo_timing=args.demo_timing,shadow_fix=args.shadow_fix,pre_background=args.pre_background,cpu625=args.cpu625,minimum_host=args.minimum_host,npc665=args.npc665,backpack621=args.backpack621,shadow_coefficients=args.shadow_coefficients,first_person_aim=args.first_person_aim,flap_flip_landing=args.flap_flip_landing)

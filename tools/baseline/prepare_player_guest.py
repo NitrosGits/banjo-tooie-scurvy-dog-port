@@ -10,6 +10,7 @@ fresh build/windows-dev/baseline outputs.
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,8 @@ IMAGE_BYTES = 1830544
 LAYOUT_SHA256 = '230267fc2b821e27c9f9dff5b4a76af1952a8df2c3df6a143d4a8e07303b0061'
 ROM_SHA256 = '9ec37fba6890362eba86fb855697a9cff1519275531b172083a1a6a045483583'
 DECOMPRESSED_SHA256 = '8c9d316b2edca686ec8393ddf95d480a7dfd9879ef434dbcfc4ea3000f2ffe89'
+# Files of the legacy standalone Silo directory that prepare_camera_bridge reads as premises.
+LEGACY_PREMISE_FILES = ('boot.bin', 'data.syms.toml')
 # Native publication references that Baseline.cmake authenticates at configure.
 CORE1_OBSERVATION = BASELINE + '/core1-publication/core1-observation.bin'
 CORE1_RANGE = (0x01E29B60, 0x01E5AEB0)  # Decompressed ROM core1 slice, 201552 bytes.
@@ -71,6 +74,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--rom', type=Path, required=True, help='User-supplied NTSC-U ROM; never copied')
+    parser.add_argument('--legacy-standalone-dir', type=Path,
+                        help='Silo step output from commit 61caf07. prepare_camera_bridge reads its boot.bin (pinned as '
+                             'LEGACY_STANDALONE_IMAGE_SHA256) and data.syms.toml as premises that a fresh Silo step cannot '
+                             'regenerate. Those two files replace the fresh ones; everything else stays fresh.')
     args = parser.parse_args()
     root, rom = args.root.resolve(), args.rom.resolve()
     if sys.platform != 'linux':
@@ -88,15 +95,23 @@ def main():
     # The 621 image proves its existing owner objects unchanged against a same-selection OFF carrier.
     sys.path.insert(0, str(tools))
     import prepare_camera_bridge as camera_owner
+    import guest_llvm
+    if args.legacy_standalone_dir:
+        if sha(args.legacy_standalone_dir / 'boot.bin') != camera_owner.LEGACY_STANDALONE_IMAGE_SHA256:
+            raise ValueError('--legacy-standalone-dir boot.bin differs from the pinned legacy standalone image')
+        silo = root / BASELINE / 'render-bridge-silo-candidate'
+        for name in LEGACY_PREMISE_FILES:
+            shutil.copyfile(args.legacy_standalone_dir / name, silo / name)
     camera = root / CAMERA
     camera.mkdir(parents=True)
     def run(command, label):
         with (camera / label).open('w') as log:
-            subprocess.run(list(map(str, command)), cwd=root, stdout=log, stderr=subprocess.STDOUT, check=True)
+            guest_llvm.run_guest(command, cwd=root, stdout=log, stderr=subprocess.STDOUT)
     # P04a: the carrier's CPU625 object uses the image's derived ckpack copy-storage selection
-    # (CPU625 + Flap Flip, prepare_camera_bridge.prepare), so the 621 custody check compares like objects.
+    # (prepare_camera_bridge.prepare), so the 621 custody check compares like objects. That selection is
+    # CPU625 + Flap Flip and not the BK pipeline, which these two flags select by default: copy storage is OFF.
     camera_owner.compile_backpack621_carrier(root, camera, run, actor_palette=True, pre_background=True,
-                                             cpu625=True, npc665=True, ckpack_copy_storage=True)
+                                             cpu625=True, npc665=True, ckpack_copy_storage=False)
     step('prepare_render_bridge.py', '--camera', '--raw', '--image', *SELECTION)
     image, receipt = camera / 'boot.bin', json.loads((camera / 'receipt.json').read_text())
     if (sha(image) != IMAGE_SHA256 or image.stat().st_size != IMAGE_BYTES or

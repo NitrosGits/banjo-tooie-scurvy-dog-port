@@ -3,6 +3,8 @@
 Shared by the canonical preparer and strict verifier. Original reference rows
 are normalized identities, not original instructions or a runtime registry.
 """
+import guest_llvm
+
 CALLEES = ('heap_resize_block', 'func_8001B864', 'heap_alloc',
            'aligned8_memcpy', 'func_8001BD30', 'heap_free')
 HEAP_DATA = {'D_8003F750': 0x8003F750}
@@ -825,9 +827,8 @@ PATCH_INPUTS = (
     'tools/prepare_heap_patch.py', 'tools/render_wrapper_contract.py',
     'tools/render_wrapper_validator.py', 'tools/verify_render_wrapper_image.py',
     'tools/codegen_provenance.py',
-    'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe',
-    'deps/LLVM-19.1.3-Windows-X64/bin/ld.lld.exe',
-    'deps/LLVM-19.1.3-Windows-X64/bin/llvm-objcopy.exe',
+    'tools/guest_llvm.py',
+    *(guest_llvm.TOOLS[name] for name in ('clang', 'lld', 'objcopy')),
 )
 LITERAL_SECTIONS = ('.tooie_hud_literals', '.tooie_wrapper_literals', '.tooie_aspect_literals')
 ORIGINAL_ELF_SHA256 = '331fe74764f14ef480688da128bb0c75ee388c416e6af7de38beff7defb8373f'

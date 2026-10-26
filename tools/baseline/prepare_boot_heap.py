@@ -8,13 +8,16 @@ environment after tools/prepare_codegen.py and prepare_baseline_raw.py.
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import toml
 from elftools.elf.elffile import ELFFile
 from elftools.elf.relocation import RelocationSection
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import guest_llvm
 
 OUTPUT = 'build/windows-dev/baseline/heap-patch'
 SOURCE = 'tools/baseline/guest/boot-initializer'
@@ -33,8 +36,7 @@ PINS = {'deps/banjo-tooie/build/us/banjotooie_decompressed.elf': '331fe74764f14e
         'config/selected.syms.toml': '37998003f59c74676667c898ef960641f195bfdefb4b47181665e75a8aada395',
         # Canonical prepare_codegen heap_realloc object accepted into the M2 image.
         'generated/heap-patch-products/heap.o': 'ed96838f19baceeab975fcd2bec9a3f24893879539a83dc4dad5bc32ba38d3e2',
-        'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe': '6ac72dac3eb54eb7f807b0c4428c8a61cf73fe77d00be8aec8bc07ab94cdcf23',
-        'deps/LLVM-19.1.3-Windows-X64/bin/ld.lld.exe': '91da6d00511f43b86c8f9800888e6c66939a864e860bfda6594c1c186fd97a77',
+        **guest_llvm.PINS,
         'deps/N64Recomp-codegen/build/N64Recomp': '34958d6ae8c047adb772090c75fdcc051036646a1db58595694f814c3a4a09b6'}
 # Accepted combined image; the Silo and camera images keep it as their exact prefix.
 ACCEPTED = {'boot.bin': '7b0b5a18e4d9ffb4ddf4bfd3bce2166d060b7da0c03792eff4b8dcaa644ddd42',
@@ -45,7 +47,7 @@ sha = lambda p: hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 def win(path):
     path = Path(path).resolve()
-    return str(path) if os.name == 'nt' else subprocess.check_output(['wslpath', '-w', str(path)], text=True).strip()
+    return guest_llvm.host_path(path)
 
 
 def validate(path, data, functions, callees, linked=False):
@@ -101,8 +103,8 @@ def main():
     selected = root / 'config/selected.syms.toml'
     heap_object = root / 'generated/heap-patch-products/heap.o'
     generator = root / 'deps/N64Recomp-codegen/build/N64Recomp'
-    compiler = root / 'deps/LLVM-19.1.3-Windows-X64/bin/clang.exe'
-    linker = compiler.parent / 'ld.lld.exe'
+    compiler = guest_llvm.tool(root, 'clang')
+    linker = guest_llvm.linker(root)
     raw_header = root / 'build/windows-dev/baseline/raw/funcs.h'
     data = DATA | CORE1_DATA | HEAP_DATA
     with original.open('rb') as stream:
@@ -120,7 +122,7 @@ def main():
     # The pinned object fixes its own callees; the linked image imports exactly these.
     callees = CALLEES | (heap_imports - set(HEAP_DATA))
     includes = [root / 'deps/banjo-tooie/include', root / 'deps/banjo-tooie/lib/ultralib/include']
-    inputs = [original, selected, heap_object, generator, compiler, linker, raw_header, Path(__file__).resolve(),
+    inputs = [original, selected, heap_object, generator, compiler, guest_llvm.tool(root, 'lld'), raw_header, Path(__file__).resolve(),
               source / 'boot_initialize.c', source / 'core1_init.c', source / 'boot_initialize.ld']
     initial = {p.resolve(): sha(p) for p in inputs}
     initial.update({p.resolve(): sha(p) for directory in includes for p in directory.rglob('*.h')})
@@ -129,7 +131,7 @@ def main():
     def run(command, name):
         commands.append([str(a) for a in command])
         with (output / name).open('w') as log:
-            subprocess.run([str(a) for a in command], cwd=root, stdout=log, stderr=subprocess.STDOUT, check=True)
+            guest_llvm.run_guest(command, cwd=root, stdout=log, stderr=subprocess.STDOUT)
     for stem, filename, object_data, object_functions in [
             ('boot', 'boot_initialize.c', DATA, ['boot_osInitialize']),
             ('core1', 'core1_init.c', CORE1_DATA, ['tooie_core1_osInitialize'])]:
@@ -141,13 +143,13 @@ def main():
         dependencies = (output / (stem + '.d')).read_text().replace('\\\n', '').split(':', 1)[1]
         for token in re.findall(r'(?:\\.|[^\s])+', dependencies):
             token = token.replace('\\ ', ' ').replace('\\\\', '\\')
-            path = Path(token) if os.name == 'nt' else Path(subprocess.check_output(['wslpath', '-u', token], text=True).strip())
+            path = guest_llvm.from_host_path(token)
             path = path.resolve()
             if path not in initial:
                 raise ValueError(f'unexpected included header: {path}')
             if path not in inputs:
                 inputs.append(path)
-    run([linker, '-m', 'elf32btsmip', '-T', win(source / 'boot_initialize.ld'), '--unresolved-symbols=ignore-all',
+    run([*linker, '-m', 'elf32btsmip', '-T', win(source / 'boot_initialize.ld'), '--unresolved-symbols=ignore-all',
          '--emit-relocs', '--orphan-handling=error', win(output / 'boot.o'), win(output / 'core1.o'), win(heap_object),
          '-o', win(output / 'boot.elf')], 'link.log')
     validate(output / 'boot.elf', data, FUNCTIONS, callees, linked=True)
