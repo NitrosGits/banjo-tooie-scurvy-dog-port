@@ -30,10 +30,14 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <string>
+#include <filesystem>
+#include <cstring>
 #include <atomic>
 #include <exception>
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach-o/dyld.h>
 #include "SDL.h"
 #endif
 #ifdef _WIN32
@@ -246,7 +250,26 @@ bool baseline::runtime_error_retained() noexcept {
 }
 #endif
 
+#ifdef __APPLE__
+// Inside an app bundle the Vulkan loader is the bundled one, and its built-in search path can also reach a
+// Homebrew MoltenVK. Use the bundle's driver manifest alone, unless the user already chose one.
+void use_bundled_vulkan_driver() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string path(size, '\0');
+    if (_NSGetExecutablePath(path.data(), &size) != 0) return;
+    path.resize(std::strlen(path.c_str()));
+    const std::string marker = ".app/Contents/MacOS/";
+    const auto at = path.rfind(marker);
+    if (at == std::string::npos) return;
+    const auto manifest = path.substr(0, at) + ".app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json";
+    if (std::filesystem::exists(manifest)) ::setenv("VK_DRIVER_FILES", manifest.c_str(), 0);
+}
+#endif
 int main(int argc, char** argv) {
+#ifdef __APPLE__
+    use_bundled_vulkan_driver();
+#endif
     // Retain stock fatal diagnostics when stdout is redirected to a run receipt.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     try {

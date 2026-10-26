@@ -90,6 +90,23 @@ build/windows-dev/baseline/player-bin/BanjoTooieScurvyDogPort --profile-dir buil
 The build runs the archive gate, then checks every linked hook call and that the embedded guest image
 equals the selected one. `BaselinePlayerStartupTest` is an optional target.
 
+## 5. Package an app bundle (optional)
+
+```bash
+tools/macos/package_app.sh        # writes dist/macos/BanjoTooieScurvyDogPort.app
+```
+
+The script refuses a player newer than its gate receipt. It copies SDL2 (the sdl2-compat shim), SDL3, libcrypto,
+the Vulkan loader and MoltenVK into `Contents/Frameworks` with `@rpath` install names, adds the MoltenVK driver
+manifest under `Contents/Resources/vulkan/icd.d`, writes `Info.plist`, copies the licenses and notices, and signs
+everything ad hoc. Inside a bundle the player points the Vulkan loader at that manifest alone (`VK_DRIVER_FILES`,
+unless you set it), so a Homebrew MoltenVK is never loaded as a second driver. Checked on this Mac: run with an empty
+environment, the app maps no Homebrew library and draws the title screen.
+
+The ad-hoc signature satisfies Apple silicon's signed-code rule but is not a Developer ID signature or a notarisation:
+a copy that was downloaded or AirDropped will be blocked by Gatekeeper until it is opened with right-click, Open. The
+app holds code compiled from your ROM; do not publish it. There is no icon yet (the repository has no PNG artwork).
+
 ## Known gaps
 
 - **Legacy standalone premise:** `prepare_camera_bridge.py` pins a Silo `boot.bin` (and reads its
@@ -113,6 +130,6 @@ equals the selected one. `BaselinePlayerStartupTest` is an optional target.
   (`tools/ci/startup_test.sh`) on Linux and macOS. It cannot build the player: that needs your ROM.
   `.github/workflows/full-build.yml` (manual) runs this whole guide from a `ROM_URL` secret: code generation on
   Linux, then the gated macOS build, handing the ROM-derived files over as an encrypted artifact (`ARTIFACT_KEY`).
-- **Distribution:** the executable links Homebrew's dynamic libraries; there is no `.app`, bundling or signing yet.
+- **Distribution:** the app is ad-hoc signed only (no Developer ID, notarisation or icon), and the bundled libraries come from Homebrew's builds on the packaging machine.
 - **Compiler hash:** `.comment` build paths differ between the Linux and Windows LLVM builds, so Linux guest
   objects are normalized to the Windows identity (`tools/guest_llvm.py`); this is what keeps the object pins valid.
