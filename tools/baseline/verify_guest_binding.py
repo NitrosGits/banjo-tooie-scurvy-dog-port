@@ -3,12 +3,13 @@ import argparse, hashlib, json, re, struct, sys
 from pathlib import Path
 
 import elf_binding
+import macho_binding
 
 def digest(data): return hashlib.sha256(data).hexdigest()
 def check(exe_path, map_path, guest_path, layout_path, fmt='pe', build=None):
     if fmt != 'pe':
-        if fmt != 'elf' or build is None: raise ValueError("ELF embedded gate requires format elf and an explicit build root")
-        return check_elf(exe_path, map_path, guest_path, layout_path, build)
+        if fmt not in ('elf', 'macho') or build is None: raise ValueError("ELF/Mach-O embedded gate requires format elf or macho and an explicit build root")
+        return (check_elf if fmt == 'elf' else check_macho)(exe_path, map_path, guest_path, layout_path, build)
     exe, mapping, guest, layout = (Path(x) for x in (exe_path,map_path,guest_path,layout_path))
     pe=exe.read_bytes(); text=mapping.read_text(); payload=guest.read_bytes()
     def need(test, why):
@@ -79,9 +80,39 @@ def check_elf(exe_path, map_path, guest_path, layout_path, build_path):
     need(vram==0x80801000+offset and vram+23036<=0x81000000, "selected layout VRAM extent")
     return {'status':'PASS','format':'elf','exe_sha256':digest(exe.read_bytes()),'map_sha256':digest(mapping.read_bytes()),'guest_sha256':digest(payload),'layout_sha256':digest(layout.read_bytes()),'embedded_bytes':size,'embedded_sha256':digest(linked),'linked_payload_equals_selected_guest':True,'state_offset':offset,'state_bytes':23036,'state_vram':vram,'symbol_addresses':addresses,'symbol_owners':owners}
 
+def check_macho(exe_path, map_path, guest_path, layout_path, build_path):
+    need = macho_binding.need
+    exe, mapping, guest, layout = (Path(x) for x in (exe_path, map_path, guest_path, layout_path))
+    build = Path(build_path).resolve(); payload = guest.read_bytes()
+    macho = macho_binding.Macho(exe); lmap = macho_binding.Ld64Map(mapping, build); lmap.bind(macho, exe)
+    # The single compiled owner comes from this build's compile database, never a basename guess.
+    source = (build/'baseline'/'baseline_boot_patch_bin.c').resolve()
+    rows = [r for r in json.loads((build/'compile_commands.json').read_text()) if (Path(r['directory'])/r['file']).resolve() == source]
+    need(len(rows) == 1, "embedded payload must have exactly one compiled owner")
+    compiled = elf_binding.compile_command(rows[0], build)
+    owner = ((build/compiled['output']).resolve(), None)
+    addresses, owners, spans = {}, {}, {}
+    for name, expected in (('baseline_boot_patch_bin', len(payload)), ('baseline_boot_patch_bin_size', 8)):
+        symbol, linked_owner, data = macho_binding.bound_symbol(macho, lmap, name, False)
+        need(linked_owner == owner, "unexpected embedded symbol owner")
+        need(symbol['size'] == expected, "linked embedded symbol size differs from selected guest: "+name)
+        addresses[name], owners[name], spans[name] = symbol['value'], macho_binding.owner_text(owner, build), data
+    size = struct.unpack('<Q', spans['baseline_boot_patch_bin_size'])[0]
+    need(size == len(payload), "linked embedded size differs from selected guest")
+    linked = spans['baseline_boot_patch_bin']
+    need(linked == payload, "linked embedded payload differs from selected guest")
+    found = re.findall(r'^#define\s+(TOOIE_BRIDGE_\w+)\s+(0x[0-9A-Fa-f]+|[0-9]+)u\s*$', layout.read_text(), re.M)
+    need(len({name for name, _ in found}) == len(found), "selected layout macro is duplicated")
+    macros = {name: int(value, 0) for name, value in found}
+    image_bytes=macros['TOOIE_BRIDGE_IMAGE_BYTES']; offset=macros['TOOIE_BRIDGE_STATE_IMAGE_OFFSET']; vram=macros['TOOIE_BRIDGE_STATE_VRAM']
+    need(size==image_bytes, "linked size differs from selected layout")
+    need(offset<=size and size-offset>=23036, "selected layout state span outside image")
+    need(vram==0x80801000+offset and vram+23036<=0x81000000, "selected layout VRAM extent")
+    return {'status':'PASS','format':'macho','exe_sha256':digest(exe.read_bytes()),'map_sha256':digest(mapping.read_bytes()),'guest_sha256':digest(payload),'layout_sha256':digest(layout.read_bytes()),'embedded_bytes':size,'embedded_sha256':digest(linked),'linked_payload_equals_selected_guest':True,'state_offset':offset,'state_bytes':23036,'state_vram':vram,'symbol_addresses':addresses,'symbol_owners':owners}
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(); parser.add_argument('exe');parser.add_argument('map');parser.add_argument('guest');parser.add_argument('layout')
-    parser.add_argument('--format',choices=('pe','elf'),default='pe');parser.add_argument('--build');args=parser.parse_args()
+    parser.add_argument('--format',choices=('pe','elf','macho'),default='pe');parser.add_argument('--build');args=parser.parse_args()
     try: print(json.dumps(check(args.exe,args.map,args.guest,args.layout,args.format,args.build)))
     except (OSError,ValueError,KeyError,struct.error) as error:
         print(json.dumps({'status':'FAIL','error':str(error)}));sys.exit(1)

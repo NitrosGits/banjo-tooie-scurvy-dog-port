@@ -83,6 +83,7 @@ player testing. This is not a claim that every scene or effect is correct. See t
 
 - [Windows build guide](docs/WINDOWS.md): the maintained way to build and
   package the port from source.
+- [macOS build guide](docs/MACOS.md): an experimental Apple Silicon build.
 - [Contributing](CONTRIBUTING.md): reporting problems and proposing changes.
 - [Architecture](docs/ARCHITECTURE.md): what is built, who owns each
   behavior, and the rules for changes.

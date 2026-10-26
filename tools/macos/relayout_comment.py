@@ -1,4 +1,7 @@
 import struct, hashlib, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from guest_llvm import LINUX_IDENT, WINDOWS_IDENT
 src, replace = sys.argv[1], sys.argv[2] == 'replace'
 d = bytearray(open(src,'rb').read())
 shoff, = struct.unpack('>I', d[0x20:0x24]); ent, num, strndx = struct.unpack('>HHH', d[0x2e:0x34])
@@ -11,7 +14,7 @@ for s in secs: s['n']=names[s['name']:names.index(b'\0',s['name'])].decode()
 data={s['i']:(b'' if s['type']==8 else bytes(d[s['off']:s['off']+s['size']])) for s in secs}
 if replace:
     c=next(s for s in secs if s['n']=='.comment')
-    data[c['i']]=data[c['i']].replace(b'/home/runner/work/llvm-project/llvm-project/clang',b'D:/a/llvm-project/llvm-project/clang')
+    data[c['i']]=data[c['i']].replace(LINUX_IDENT,WINDOWS_IDENT)
     c['size']=len(data[c['i']])
 order=sorted([s for s in secs if s['i']], key=lambda s:(s['off'], s['size']>0, s['i']))
 cur=order[0]['off']; out=bytearray(d[:cur])

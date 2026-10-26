@@ -9,6 +9,7 @@ import struct
 import subprocess
 
 import elf_binding
+import macho_binding
 
 
 def need(ok, why):
@@ -57,7 +58,7 @@ def archive_members(path, elf=False):
 
 def commands(args):
     rows = json.loads((args.build / 'compile_commands.json').read_text())
-    if args.format == 'elf':
+    if args.format in ('elf', 'macho'):  # clang and GCC rows share the GNU-style -o command shape
         rows = [elf_binding.compile_command(x, args.build) for x in rows
                 if (Path(x['directory']) / x['file']).resolve().parent == args.raw]
         need(len(rows) == args.expected_count > 0, 'Selected raw command count mismatch')
@@ -76,6 +77,8 @@ def check_archive(args, snapshot):
     need(snapshot.get('format', 'pe') == args.format, 'Qualification format differs from the selected binary format')
     if args.format == 'elf':
         return check_elf_archive(args, snapshot)
+    if args.format == 'macho':
+        return check_macho_archive(args, snapshot)
     need(snapshot['raw_root'] == str(args.raw), 'Qualification raw root mismatch')
     need(commands(args) == snapshot['commands'], 'Qualified compile command mismatch')
     for row in snapshot['files']:
@@ -109,12 +112,34 @@ def check_elf_archive(args, snapshot):
         need(obj.stat().st_size == row['bytes'] and sha(obj) == row['sha256'], 'Qualified object changed: ' + row['name'])
 
 
+def macho_objects(args, selected):
+    members = macho_binding.archive_members(args.archive)
+    outputs = macho_binding.object_bijection(selected)
+    need(set(members) == set(outputs), 'BSD archive basenames differ from selected raw objects')
+    return members, outputs
+
+
+def check_macho_archive(args, snapshot):
+    need(snapshot['raw_root'] == str(args.raw), 'Qualification raw root mismatch')
+    selected = commands(args)
+    need(selected == snapshot['commands'], 'Qualified compile command mismatch')
+    for row in snapshot['files']:
+        need(sha(row['path']) == row['sha256'], 'Qualified source/dependency changed: ' + row['path'])
+    need(macho_binding.objdump_identity(args.tools) == snapshot['authority']['objdump'], 'Qualified LLVM objdump identity changed')
+    members, outputs = macho_objects(args, selected)
+    need(members == {x['member']: (x['bytes'], x['sha256']) for x in snapshot['objects']}, 'Archive member identity/size/hash mismatch')
+    need({x['member']: x['name'] for x in snapshot['objects']} == outputs, 'Archive member/object bijection mismatch')
+    for row in snapshot['objects']:
+        obj = args.build / row['name']
+        need(obj.stat().st_size == row['bytes'] and sha(obj) == row['sha256'], 'Qualified object changed: ' + row['name'])
+
+
 def accepted_inputs(args, object_suffix):
     need(args.evidence and args.compile_log and args.accepted_archive_sha, 'Manual evidence arguments required')
     need(not args.snapshot.exists() or args.replace, 'Qualification exists; explicit --replace required')
     evidence = json.loads(args.evidence.read_text())
     selected = commands(args)
-    if args.format == 'elf':
+    if args.format in ('elf', 'macho'):
         evidence['commands'] = [elf_binding.compile_command(x, args.build) for x in evidence['commands']]
     need(sorted(evidence['commands'], key=lambda x: x['output']) == selected, 'Accepted commands differ')
     declared = {str(Path(x['path']).resolve()): x for x in evidence['files']}
@@ -141,6 +166,8 @@ def accepted_inputs(args, object_suffix):
 def qualify(args):
     if args.format == 'elf':
         return qualify_elf(args)
+    if args.format == 'macho':
+        return qualify_macho(args)
     evidence, selected = accepted_inputs(args, r'\.obj')
     members = archive_members(args.archive)
     expected = {x['output'].replace('\\', '/') for x in selected}
@@ -203,6 +230,38 @@ def qualify_elf(args):
     args.snapshot.write_text(json.dumps(snapshot, indent=2) + '\n')
 
 
+def qualify_macho(args):
+    evidence, selected = accepted_inputs(args, r'\.o\b')
+    objdump = macho_binding.objdump_identity(args.tools)
+    members, outputs = macho_objects(args, selected)
+    hooks, relocation_units = [], []
+    for row in selected:
+        source = Path(row['file']).read_text()
+        unit_hooks = Counter(re.findall(r'\b(baseline_\w+)\s*\(', source))
+        if not unit_hooks:
+            continue
+        actual_hooks, forms = macho_binding.hook_relocations(objdump['path'], args.build / row['output'])
+        need(set(actual_hooks) == set(unit_hooks), 'Source/relocation hook-name mismatch')
+        member = row['output'].replace('\\', '/').rsplit('/', 1)[-1]
+        relocation_units.append(dict(source=Path(row['file']).name, source_counts=dict(unit_hooks),
+                                     compiled_counts=dict(actual_hooks), relocation_forms=dict(forms)))
+        for match in re.finditer(r'RECOMP_FUNC void (\w+)\(', source):
+            end = source.find('RECOMP_FUNC void ', match.end())
+            body = source[match.start():end if end >= 0 else len(source)]
+            targets = sorted(set(re.findall(r'\b(baseline_\w+)\s*\(', body)))
+            if targets:
+                hooks.append(dict(caller=match[1], owner=args.archive.name + '(' + member + ')', member=member, targets=targets))
+    previous = sha(args.snapshot) if args.snapshot.exists() else None
+    snapshot = dict(format='macho', raw_root=str(args.raw), commands=selected, files=evidence['files'], hooks=hooks,
+                    relocation_units=relocation_units,
+                    objects=[dict(name=outputs[m], member=m, bytes=v[0], sha256=v[1]) for m, v in sorted(members.items())],
+                    authority=dict(accepted_archive_sha256=args.accepted_archive_sha, compile_evidence_sha256=sha(args.compile_log),
+                                   source_evidence_sha256=sha(args.evidence), previous_snapshot_sha256=previous, objdump=objdump))
+    check_archive(args, snapshot)
+    args.snapshot.parent.mkdir(parents=True, exist_ok=True)
+    args.snapshot.write_text(json.dumps(snapshot, indent=2) + '\n')
+
+
 def check_native(args, snapshot):
     text, pe = args.map.read_text(), args.exe.read_bytes()
     nt = struct.unpack_from('<I', pe, 0x3c)[0]
@@ -252,6 +311,31 @@ def check_native_elf(args, snapshot):
                 snapshot_sha256=sha(args.snapshot), objdump_sha256=snapshot['authority']['objdump']['sha256'], hooks=linked)
 
 
+def check_native_macho(args, snapshot):
+    tool = snapshot['authority']['objdump']['path']  # identity re-verified by check_archive
+    macho = macho_binding.Macho(args.exe)
+    lmap = macho_binding.Ld64Map(args.map, args.build)
+    lmap.bind(macho, args.exe)
+    archive = args.archive.resolve()
+    linked = []
+    for row in snapshot['hooks']:
+        caller, owner, _ = macho_binding.bound_symbol(macho, lmap, row['caller'], True, allow_weak=True)
+        need(owner == (archive, row['member']) and row['owner'] == archive.name + '(' + row['member'] + ')',
+             'Wrong native raw caller owner')
+        branches = macho_binding.direct_branches(tool, args.exe, row['caller'], caller['value'], caller['size'])
+        targets = {}
+        for target in row['targets']:
+            hook, hook_owner, _ = macho_binding.bound_symbol(macho, lmap, target, True)
+            need(hook_owner[0] != archive, 'Raw hook target resolved inside the raw archive: ' + target)
+            # A branch island or stub would show another target address: refused, never followed.
+            need(('call', hook['value'], target) in branches or ('jmp', hook['value'], target) in branches,
+                 'Missing native raw hook call: ' + target)
+            targets[target] = dict(address=hook['value'], owner=macho_binding.owner_text(hook_owner, args.build))
+        linked.append(dict(caller=row['caller'], address=caller['value'], owner=row['owner'], targets=targets))
+    return dict(format='macho', exe_sha256=sha(args.exe), map_sha256=sha(args.map), archive_sha256=sha(args.archive),
+                snapshot_sha256=sha(args.snapshot), objdump_sha256=snapshot['authority']['objdump']['sha256'], hooks=linked)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('qualify', 'archive', 'native', 'prelaunch'))
@@ -262,7 +346,7 @@ def main():
     parser.add_argument('--expected-count', type=int, required=True)
     parser.add_argument('--accepted-archive-sha')
     parser.add_argument('--replace', action='store_true')
-    parser.add_argument('--format', choices=('pe', 'elf'), default='pe')
+    parser.add_argument('--format', choices=('pe', 'elf', 'macho'), default='pe')
     args = parser.parse_args()
     args.build, args.raw = args.build.resolve(), args.raw.resolve()
     if args.mode == 'qualify':
@@ -272,7 +356,7 @@ def main():
         check_archive(args, snapshot)
         if args.mode in ('native', 'prelaunch'):
             need(args.exe and args.map and args.receipt, 'Native paths required')
-            receipt = check_native_elf(args, snapshot) if args.format == 'elf' else check_native(args, snapshot)
+            receipt = {'elf': check_native_elf, 'macho': check_native_macho}.get(args.format, check_native)(args, snapshot)
             if args.mode == 'native':
                 args.receipt.write_text(json.dumps(receipt, indent=2) + '\n')
             else:

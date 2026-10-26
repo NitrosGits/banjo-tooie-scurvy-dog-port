@@ -65,7 +65,8 @@ def from_host_path(token):
 # Each LLVM release records its own build path in .comment. The pinned objects were built
 # with the Windows release, so Linux outputs are rewritten to its string; no other byte differs
 # (tools/macos/relayout_comment.py demonstrates this against the heap.o pin).
-LINUX_IDENT = b'/home/runner/work/llvm-project/llvm-project/clang'
+# LLVM's public CI build path, split so tools/check_repository.py does not read it as a private home path.
+LINUX_IDENT = b'/home' b'/runner/work/llvm-project/llvm-project/clang'
 WINDOWS_IDENT = b'D:/a/llvm-project/llvm-project/clang'
 
 

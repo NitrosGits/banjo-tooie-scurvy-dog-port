@@ -30,6 +30,12 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <atomic>
+#include <exception>
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include "SDL.h"
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #elif !defined(BASELINE_PLAYER)
@@ -394,10 +400,31 @@ int main(int argc, char** argv) {
             }, [](const std::string& reason) { console_error(reason.c_str()); }, false);
             tooie::si::reset();
 #endif
-            recomp::start(project_version, handle,
-                rsp_callbacks, baseline::renderer_callbacks(), baseline::audio_callbacks(),
-                baseline::input_callbacks(), {nullptr, nullptr, baseline::update_gfx},
-                {baseline::vi_complete, nullptr}, {console_error}, {});
+            const auto run_runtime = [&] {
+                recomp::start(project_version, handle,
+                    rsp_callbacks, baseline::renderer_callbacks(), baseline::audio_callbacks(),
+                    baseline::input_callbacks(), {nullptr, nullptr, baseline::update_gfx},
+                    {baseline::vi_complete, nullptr}, {console_error}, {});
+            };
+#ifdef __APPLE__
+            // Vulkan runs on MoltenVK, whose present thread asks the main queue (dispatch_sync) for the screen's
+            // refresh rate on every frame. start() and its shutdown joins would keep this thread from answering, so
+            // the runtime runs on a helper thread while the main thread pumps SDL events and serves its run loop.
+            std::exception_ptr runtime_failure;
+            std::atomic<bool> runtime_done{false};
+            std::thread runtime([&] {
+                try { run_runtime(); } catch (...) { runtime_failure = std::current_exception(); }
+                runtime_done.store(true, std::memory_order_release);
+            });
+            while (!runtime_done.load(std::memory_order_acquire)) {
+                SDL_PumpEvents();
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.001, false);
+            }
+            runtime.join();
+            if (runtime_failure) std::rethrow_exception(runtime_failure);
+#else
+            run_runtime();
+#endif
         } catch (const std::exception& error) {
             // Runtime-owned failure without established closure: log only, never a dialog.
             std::fprintf(stderr, "baseline standard start threw: %s; process failure, ownership unaccepted\n", error.what());

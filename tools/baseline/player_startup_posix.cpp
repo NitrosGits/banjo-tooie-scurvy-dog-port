@@ -1,13 +1,16 @@
-// Linux implementation of player_startup.hpp; player_startup.cpp is the Windows one.
+// POSIX (Linux and macOS) implementation of player_startup.hpp; player_startup.cpp is the Windows one.
 // The profile folder is opened without following its final link, locked with
-// flock and reached through /proc/self/fd for the process lifetime, so a renamed
-// or replaced root is never followed. flock binds only cooperating processes;
-// every copy also refuses a source whose identity, size or times change.
+// flock and, on Linux, reached through /proc/self/fd for the process lifetime, so a renamed
+// or replaced root is never followed. macOS has no path for a held directory descriptor: there
+// the folder is reached through its path at open time, checked to be the held inode, and a
+// rename of the root while the game runs is not detected. flock binds only cooperating
+// processes; every copy also refuses a source whose identity, size or times change.
 #include "player_startup.hpp"
 #include "player_version.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
@@ -20,10 +23,15 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 #include "SDL.h"
 #include <nfd.h>
+#ifndef __APPLE__
 #ifndef RENAME_NOREPLACE
 #define RENAME_NOREPLACE (1u << 0)
+#endif
 #endif
 
 namespace fs = std::filesystem;
@@ -64,7 +72,20 @@ std::string in_use(const fs::path& root) {
     return "Another copy of Banjo-Tooie: Scurvy Dog Port is already using " + utf8(root) +
         ". Close it, then start the game again.";
 }
+#ifdef __APPLE__
+bool on_main_thread() { return ::pthread_main_np() != 0; }
+#else
 bool on_main_thread() { return ::syscall(SYS_gettid) == ::getpid(); }
+#endif
+
+// Renames without replacing an existing entry: 0, or -1 with errno (EEXIST when the name exists).
+int rename_no_replace(int from_folder, const char* from, int to_folder, const char* to) {
+#ifdef __APPLE__
+    return ::renameatx_np(from_folder, from, to_folder, to, RENAME_EXCL);
+#else
+    return int(::syscall(SYS_renameat2, from_folder, from, to_folder, to, RENAME_NOREPLACE));
+#endif
+}
 
 struct Fd {
     int value = -1;
@@ -89,10 +110,17 @@ std::mutex held_mutex;
 std::vector<Held> held;
 
 bool same_inode(const struct stat& a, const struct stat& b) { return a.st_dev == b.st_dev && a.st_ino == b.st_ino; }
+#ifdef __APPLE__
+const timespec& mtime_of(const struct stat& s) { return s.st_mtimespec; }
+const timespec& ctime_of(const struct stat& s) { return s.st_ctimespec; }
+#else
+const timespec& mtime_of(const struct stat& s) { return s.st_mtim; }
+const timespec& ctime_of(const struct stat& s) { return s.st_ctim; }
+#endif
 bool unchanged(const struct stat& a, const struct stat& b) {
     return same_inode(a, b) && a.st_size == b.st_size &&
-        a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
-        a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+        mtime_of(a).tv_sec == mtime_of(b).tv_sec && mtime_of(a).tv_nsec == mtime_of(b).tv_nsec &&
+        ctime_of(a).tv_sec == ctime_of(b).tv_sec && ctime_of(a).tv_nsec == ctime_of(b).tv_nsec;
 }
 
 fs::path normal(const fs::path& path) {
@@ -230,7 +258,12 @@ std::optional<std::string> read_ordinary(int folder, const char* name, const fs:
 // False: the name already exists.
 struct Stage { int folder; std::string prefix; };
 bool publish_new(int folder, const std::string& name, std::string_view bytes, const Stage& stage) {
-    Fd file(::openat(stage.folder, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600));
+    Fd file;
+#ifdef O_TMPFILE
+    file = Fd(::openat(stage.folder, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600));
+#else
+    errno = EOPNOTSUPP;  // no unnamed files here: stage a named one
+#endif
     std::string stage_name;
     if (!file) {
         const int error = errno;
@@ -249,13 +282,15 @@ bool publish_new(int folder, const std::string& name, std::string_view bytes, co
         !pread_equals(file.value, bytes) || ::fstat(file.value, &staged))
         fail(name + " could not be written and verified" + kept);
     if (stage_name.empty()) {
+#ifdef O_TMPFILE
         const auto proc = "/proc/self/fd/" + std::to_string(file.value);
         if (::linkat(AT_FDCWD, proc.c_str(), folder, name.c_str(), AT_SYMLINK_FOLLOW)) {
             const int error = errno;
             if (error == EEXIST) return false;
             fail(name + " could not be published" + os_error(error));
         }
-    } else if (::syscall(SYS_renameat2, stage.folder, stage_name.c_str(), folder, name.c_str(), RENAME_NOREPLACE)) {
+#endif
+    } else if (rename_no_replace(stage.folder, stage_name.c_str(), folder, name.c_str())) {
         const int error = errno;
         if (error == EEXIST) {
             std::fprintf(stderr, "player kept the existing %s%s\n", name.c_str(), kept.c_str());
@@ -498,11 +533,22 @@ Profile Profile::acquire(const fs::path& requested) {
         fail("The profile folder " + utf8(root) + " could not be flushed to disk" + os_error(error) + ".");
     }
     // Runtime storage goes through the held descriptor for the process lifetime.
+#ifdef __APPLE__
+    // No path reaches a held directory descriptor here: use the descriptor's current path, checked below
+    // to be the held inode, so only a rename of the root while the game runs goes unnoticed.
+    char resolved[PATH_MAX];
+    if (::fcntl(folder.value, F_GETPATH, resolved))
+        fail("This system could not name the profile folder it opened. Nothing was started.");
+    auto storage = fs::path(resolved);
+    const char* storage_missing = "This system did not return the profile folder it opened. Nothing was started.";
+#else
     auto storage = fs::path("/proc/self/fd") / std::to_string(folder.value);
+    const char* storage_missing = "This system does not provide /proc/self/fd, which Banjo-Tooie: Scurvy Dog Port needs to keep using "
+        "the profile folder it opened. Nothing was started.";
+#endif
     struct stat anchored{};
     if (::stat(storage.c_str(), &anchored) || !same_inode(anchored, held_stat))
-        fail("This system does not provide /proc/self/fd, which Banjo-Tooie: Scurvy Dog Port needs to keep using "
-            "the profile folder it opened. Nothing was started.");
+        fail(storage_missing);
     return Profile(root, folder.release(), std::move(storage));
 }
 
@@ -590,7 +636,7 @@ Migration migrate_profile(const fs::path& previous, const fs::path& destination)
         if (read_marker(old_folder.value, old_root) != Marker::Matches) fail("the earlier profile marker changed during the copy");
         if (!publish_new(stage.value, marker_file.c_str(), marker_bytes)) fail("the profile marker could not be written");
         // No replace: a destination that appeared meanwhile wins.
-        if (::syscall(SYS_renameat2, new_parent.value, stage_name.c_str(), new_parent.value, new_name.c_str(), RENAME_NOREPLACE)) {
+        if (rename_no_replace(new_parent.value, stage_name.c_str(), new_parent.value, new_name.c_str())) {
             const int error = errno;
             if (error == EEXIST || error == ENOTEMPTY) fail(utf8(new_root) + " appeared meanwhile and was left as it is");
             fail("the copy could not be renamed to " + utf8(new_root) + os_error(error));

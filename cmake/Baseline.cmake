@@ -1,16 +1,28 @@
 # Baseline and selected player build composition; generic RT64 repairs remain separately selected.
+# _baseline_posix selects POSIX host decisions (SDL2 package, OpenSSL, POSIX startup); the binary
+# format decisions (link map, qualification gates) use _baseline_elf or _baseline_macho.
+set(_baseline_posix OFF)
+set(_baseline_elf OFF)
+set(_baseline_macho OFF)
 if(WIN32)
-    set(_baseline_elf OFF)
+    # PE/COFF
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND NOT MSVC)
     # Linux qualifies only x86_64 ELF/GNU ar/GNU bfd maps; Windows evidence never applies.
+    set(_baseline_posix ON)
     set(_baseline_elf ON)
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    # macOS qualifies only arm64 Mach-O/ld64 maps; neither ELF nor PE evidence applies.
+    set(_baseline_posix ON)
+    set(_baseline_macho ON)
 else()
-    message(FATAL_ERROR "The reviewed baseline carrier supports Windows or Linux x86_64 only")
+    message(FATAL_ERROR "The reviewed baseline carrier supports Windows, Linux x86_64 or macOS arm64 only")
 endif()
 # One linker-map and force-include spelling per toolchain family.
 function(_baseline_link_map target path)
     if(_baseline_elf)
         target_link_options(${target} PRIVATE -fuse-ld=bfd "LINKER:-Map=${path}" "LINKER:--cref" "LINKER:--no-demangle")
+    elseif(_baseline_macho)
+        target_link_options(${target} PRIVATE "LINKER:-map,${path}")
     else()
         target_link_options(${target} PRIVATE "/MAP:${path}")
     endif()
@@ -109,7 +121,7 @@ endif()
 set(RUNTIME_ROOT "${TOOIE_DEPS_ROOT}/N64ModernRuntime")
 set(RUNTIME_RECOMP_INCLUDE "${RUNTIME_ROOT}/N64Recomp/include")
 set(_baseline_rt64 "${TOOIE_DEPS_ROOT}/rt64")
-if(NOT _baseline_elf)
+if(NOT _baseline_posix)
     # Match the original RT64 Windows CMake's bundled SDL headers/imports/DLL.
     set(_baseline_sdl "${_baseline_rt64}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3")
     # Official pinned runtime pair; RT64's loader and build-time compiler stay unchanged.
@@ -131,14 +143,14 @@ if(NOT _baseline_elf)
         "${_baseline_dxc}/dxcompiler.dll" "${_baseline_dxc}/dxil.dll")
 endif()
 find_package(Threads REQUIRED)
-if(_baseline_elf)
+if(_baseline_posix)
     # Non-Windows runtime/platform hashing uses OpenSSL, as Dependencies.cmake declares.
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 endif()
 add_subdirectory("${RUNTIME_ROOT}" "${CMAKE_BINARY_DIR}/runtime")
 target_include_directories(librecomp PUBLIC "${RUNTIME_RECOMP_INCLUDE}")
 target_include_directories(ultramodern PUBLIC "${RUNTIME_RECOMP_INCLUDE}")
-if(_baseline_elf)
+if(_baseline_posix)
     # Public SDL2 package with RT64's SDL Vulkan window ABI, as NativeHost.cmake selects on Linux.
     find_package(SDL2 2.26 REQUIRED)
     if(TARGET SDL2::SDL2)
@@ -161,10 +173,17 @@ set(_baseline_platform_libraries ${_baseline_crypto_library} ${_baseline_timer_l
 set(RT64_STATIC ON CACHE BOOL "Stock static RT64" FORCE)
 if(_baseline_elf)
     set(RT64_SDL_WINDOW_VULKAN ON CACHE BOOL "Public SDL Vulkan Linux backend" FORCE)
+elseif(_baseline_macho)
+    set(RT64_SDL_WINDOW_VULKAN OFF CACHE BOOL "macOS uses RT64's Metal backend" FORCE)
 else()
     set(RT64_SDL_WINDOW_VULKAN OFF CACHE BOOL "Stock Windows backend" FORCE)
 endif()
 add_subdirectory("${_baseline_rt64}" "${CMAKE_BINARY_DIR}/rt64")
+if(_baseline_macho)
+    # The pinned hlslpp calls labs() after including only <math.h>; the macOS SDK's libc++ no longer
+    # reaches <stdlib.h> through it. Dependents include the same RT64 headers.
+    target_compile_options(rt64 PUBLIC -include stdlib.h)
+endif()
 
 # Only source-demonstrated generic repairs; never select the product matcher bundle.
 option(TOOIE_BASELINE_RT64_GENERIC_FIXES "Select pinned generic RT64 repairs" OFF)
@@ -546,7 +565,7 @@ inline constexpr char product[] = "Banjo-Tooie: Scurvy Dog Port";
 inline constexpr char version[] = "@TOOIE_PLAYER_VERSION@";
 }
 ]] @ONLY)
-    if(_baseline_elf)
+    if(_baseline_posix)
         set(_baseline_player_startup tools/baseline/player_startup_posix.cpp)
         target_link_libraries(TooieBaseline PRIVATE nfd)
     else()
@@ -555,7 +574,7 @@ inline constexpr char version[] = "@TOOIE_PLAYER_VERSION@";
     target_sources(TooieBaseline PRIVATE ${_baseline_player_startup} tools/baseline/issue_evidence.cpp)
     target_include_directories(TooieBaseline PRIVATE "${_player_generated}")
     target_compile_definitions(TooieBaseline PRIVATE BASELINE_PLAYER=1)
-    if(_baseline_elf)
+    if(_baseline_posix)
         set_target_properties(TooieBaseline PROPERTIES OUTPUT_NAME BanjoTooieScurvyDogPort)
     else()
         target_link_libraries(TooieBaseline PRIVATE ${_baseline_startup_libraries})
@@ -565,7 +584,7 @@ inline constexpr char version[] = "@TOOIE_PLAYER_VERSION@";
         # Release-family PDB reference without the build machine's absolute path.
         target_link_options(TooieBaseline PRIVATE "/PDBALTPATH:%_PDB%")
     endif()
-    if(_baseline_elf)
+    if(_baseline_posix)
         add_executable(BaselinePlayerStartupTest EXCLUDE_FROM_ALL tests/baseline_player_startup_posix_test.cpp
             ${_baseline_player_startup})
         target_link_libraries(BaselinePlayerStartupTest PRIVATE ${_baseline_sdl_link} nfd)
@@ -575,7 +594,7 @@ inline constexpr char version[] = "@TOOIE_PLAYER_VERSION@";
     endif()
     target_include_directories(BaselinePlayerStartupTest PRIVATE "${CMAKE_SOURCE_DIR}/tools/baseline" "${_player_generated}")
     target_compile_definitions(BaselinePlayerStartupTest PRIVATE NOMINMAX)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_libraries(BaselinePlayerStartupTest PRIVATE ${_baseline_startup_libraries})
     endif()
     set_target_properties(BaselinePlayerStartupTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_baseline_executable_dir}")
@@ -907,7 +926,7 @@ endif()
         foreach(_target IN ITEMS ultramodern librecomp)
             target_include_directories(${_target} PRIVATE "${CMAKE_SOURCE_DIR}/src")
         endforeach()
-        if(MSVC OR _baseline_elf)
+        if(MSVC OR _baseline_posix)
             if(TOOIE_BASELINE_RENDERER_CANDIDATE_OUTPUT)
                 set(_baseline_map "${_baseline_executable_dir}/TooieBaseline.map")
             else()
@@ -2131,7 +2150,7 @@ if(TOOIE_BASELINE_RENDER_BRIDGE)
         target_include_directories(BaselineGraphicsRateTest PRIVATE
             "${_baseline_rate_fixture_dir}" "${RUNTIME_RECOMP_INCLUDE}")
         target_link_libraries(BaselineGraphicsRateTest PRIVATE rt64)
-        if(NOT _baseline_elf)
+        if(NOT _baseline_posix)
             target_link_directories(BaselineGraphicsRateTest PRIVATE "${_baseline_sdl}/lib/x64")
         endif()
         if(MSVC)
@@ -2258,9 +2277,13 @@ target_compile_definitions(TooieBaseline PRIVATE "BASELINE_QUIET_TROT=$<BOOL:${_
     "BASELINE_FLAP_FLIP=$<BOOL:${_baseline_flap_flip}>")
 target_link_libraries(TooieBaseline PRIVATE BaselineRecompiledFuncs librecomp ultramodern rt64
     Threads::Threads ${_baseline_sdl_link} ${_baseline_platform_libraries})
+if(_baseline_macho)
+    # main() serves the CoreFoundation run loop while the runtime runs on a helper thread (see main.cpp).
+    target_link_libraries(TooieBaseline PRIVATE "-framework CoreFoundation")
+endif()
 # Qualification is a manual reviewed step; build targets never create/refresh it.
 if(TOOIE_BASELINE_CAMERA_IDENTITY)
-    if(NOT (MSVC OR _baseline_elf) OR NOT TOOIE_BASELINE_TERMINAL_FENCE OR NOT _baseline_map)
+    if(NOT (MSVC OR _baseline_posix) OR NOT TOOIE_BASELINE_TERMINAL_FENCE OR NOT _baseline_map)
         message(FATAL_ERROR "Selected raw gate requires a map-producing composition")
     endif()
     if(_baseline_elf)
@@ -2276,6 +2299,19 @@ if(TOOIE_BASELINE_CAMERA_IDENTITY)
         endif()
         set(_baseline_binding_format --format elf)
         set(_baseline_binding_tools "${TOOIE_BASELINE_BINUTILS_DIR}")
+    elseif(_baseline_macho)
+        set(TOOIE_BASELINE_MACHO_TOOLS_DIR "" CACHE PATH "Explicit directory whose llvm-objdump the Mach-O gates use, for example the Xcode toolchain usr/bin")
+        set(_baseline_objdump "${TOOIE_BASELINE_MACHO_TOOLS_DIR}/llvm-objdump")
+        if(NOT IS_ABSOLUTE "${TOOIE_BASELINE_MACHO_TOOLS_DIR}" OR NOT EXISTS "${_baseline_objdump}")
+            message(FATAL_ERROR "Mach-O gates require an explicit absolute TOOIE_BASELINE_MACHO_TOOLS_DIR containing llvm-objdump")
+        endif()
+        execute_process(COMMAND "${_baseline_objdump}" --version
+            RESULT_VARIABLE _baseline_objdump_result OUTPUT_VARIABLE _baseline_objdump_version)
+        if(NOT _baseline_objdump_result EQUAL 0 OR NOT _baseline_objdump_version MATCHES "LLVM")
+            message(FATAL_ERROR "TOOIE_BASELINE_MACHO_TOOLS_DIR/llvm-objdump must be LLVM objdump")
+        endif()
+        set(_baseline_binding_format --format macho)
+        set(_baseline_binding_tools "${TOOIE_BASELINE_MACHO_TOOLS_DIR}")
     else()
         set(_baseline_binding_format)
         set(_baseline_binding_tools "${TOOIE_DEPS_ROOT}/LLVM-19.1.3-Windows-X64/bin")
@@ -2295,17 +2331,17 @@ if(TOOIE_BASELINE_CAMERA_IDENTITY)
         COMMAND "${Python3_EXECUTABLE}" "${_baseline_binding_tool}" native ${_baseline_binding_args}
             --exe "$<TARGET_FILE:TooieBaseline>" --map "${_baseline_map}" --receipt "${_baseline_native_receipt}"
         VERBATIM)
-    if(_baseline_elf)
-        # launch_engineering.py is Windows-only; Linux runs the embedded guest equality gate at link.
+    if(_baseline_posix)
+        # launch_engineering.py is Windows-only; POSIX hosts run the embedded guest equality gate at link.
         add_custom_command(TARGET TooieBaseline POST_BUILD
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/baseline/verify_guest_binding.py"
-                --format elf --build "${CMAKE_BINARY_DIR}" "$<TARGET_FILE:TooieBaseline>" "${_baseline_map}"
+                ${_baseline_binding_format} --build "${CMAKE_BINARY_DIR}" "$<TARGET_FILE:TooieBaseline>" "${_baseline_map}"
                 "${_baseline_bridge_dir}/boot.bin" "${_baseline_bridge_dir}/render_bridge_layout.h"
             VERBATIM)
     endif()
 endif()
 
-if(NOT _baseline_elf)
+if(NOT _baseline_posix)
     # Original RT64 exposes bare SDL2/SDL2main imports from its directory scope.
     target_link_directories(TooieBaseline PRIVATE "${_baseline_sdl}/lib/x64")
     add_custom_command(TARGET TooieBaseline POST_BUILD
@@ -2323,7 +2359,7 @@ target_link_libraries(platform_support_test PRIVATE ${_baseline_platform_librari
 set_target_properties(platform_support_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_baseline_executable_dir}")
 add_test(NAME platform_support COMMAND platform_support_test "${CMAKE_BINARY_DIR}/baseline/platform-support-test")
 if(TOOIE_BASELINE_PLAYER)
-    if(_baseline_elf)
+    if(_baseline_posix)
         # mkdtemp under the system temp folder; drvfs rejects required no-replace rename.
         add_test(NAME baseline_player_startup COMMAND BaselinePlayerStartupTest)
     else()
@@ -2344,7 +2380,7 @@ if(TOOIE_BASELINE_PLAYER)
     target_link_libraries(baseline_input_host_test PRIVATE
         ${_baseline_sdl_link} ${_baseline_startup_libraries} ${_baseline_platform_libraries})
     set_target_properties(baseline_input_host_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_baseline_executable_dir}")
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         add_custom_command(TARGET baseline_input_host_test POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_baseline_sdl}/lib/x64/SDL2.dll"
                 "$<TARGET_FILE_DIR:baseline_input_host_test>" VERBATIM)
@@ -2356,7 +2392,7 @@ if(TOOIE_BASELINE_PLAYER)
         tools/baseline/issue_evidence.cpp src/platform_support.cpp)
     target_link_libraries(baseline_output_rate_test PRIVATE ${_baseline_platform_libraries})
     target_link_libraries(baseline_output_rate_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_output_rate_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_output_rate_test PRIVATE BASELINE_PLAYER=1 NOMINMAX HLSL_CPU SDL_MAIN_HANDLED)
@@ -2402,7 +2438,7 @@ if(TOOIE_BASELINE_RT64_GENERIC_FIXES)
     # Reuse the maintained S20 fixture against this baseline's actual RT64 archive.
     add_executable(baseline_rt64_owner_S_test tests/rt64_scene_match_policy_test.cpp)
     target_link_libraries(baseline_rt64_owner_S_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_rt64_owner_S_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_rt64_owner_S_test PRIVATE TOOIE_V10_ARM=0 HLSL_CPU)
@@ -2420,7 +2456,7 @@ if(TOOIE_BASELINE_RT64_GENERIC_FIXES)
     # Same-scene projection eligibility regression against the sole selected archive.
     add_executable(baseline_rt64_projection_match_test tests/rt64_projection_match_test.cpp)
     target_link_libraries(baseline_rt64_projection_match_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_rt64_projection_match_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_rt64_projection_match_test PRIVATE TOOIE_V10_ARM=0 HLSL_CPU)
@@ -2437,7 +2473,7 @@ if(TOOIE_BASELINE_RT64_GENERIC_FIXES)
     # Preserve the combined projection supplied by the guest at frame endpoints.
     add_executable(baseline_rt64_projection_preservation_test tests/rt64_projection_preservation_test.cpp)
     target_link_libraries(baseline_rt64_projection_preservation_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_rt64_projection_preservation_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_rt64_projection_preservation_test PRIVATE
@@ -2447,7 +2483,7 @@ if(TOOIE_BASELINE_RT64_GENERIC_FIXES)
         "${_baseline_rt64}/src" "${_baseline_rt64}/src/contrib"
         "${_baseline_rt64}/src/contrib/hlslpp/include" "${_baseline_rt64}/src/contrib/plume")
     add_test(NAME baseline_rt64_projection_preservation COMMAND baseline_rt64_projection_preservation_test)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         add_custom_command(TARGET baseline_rt64_projection_preservation_test POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_baseline_sdl}/lib/x64/SDL2.dll" "$<TARGET_FILE_DIR:baseline_rt64_projection_preservation_test>"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_baseline_dxc}/dxcompiler.dll" "$<TARGET_FILE_DIR:baseline_rt64_projection_preservation_test>"
@@ -2464,7 +2500,7 @@ if(TOOIE_BASELINE_RT64_GENERIC_FIXES)
     add_test(NAME baseline_transition_scope COMMAND baseline_transition_scope_test)
     add_executable(baseline_camera_float_test tests/baseline_camera_float_test.cpp)
     target_link_libraries(baseline_camera_float_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_camera_float_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_camera_float_test PRIVATE HLSL_CPU)
@@ -2479,7 +2515,7 @@ if(TOOIE_BASELINE_MATRIX_TRACE)
     # F4 player correspondence rows: collector against synthetic RT64 draw data and frame maps.
     add_executable(baseline_rt64_player_rows_test EXCLUDE_FROM_ALL tests/baseline_rt64_player_rows_test.cpp)
     target_link_libraries(baseline_rt64_player_rows_test PRIVATE rt64)
-    if(NOT _baseline_elf)
+    if(NOT _baseline_posix)
         target_link_directories(baseline_rt64_player_rows_test PRIVATE "${_baseline_sdl}/lib/x64")
     endif()
     target_compile_definitions(baseline_rt64_player_rows_test PRIVATE HLSL_CPU NOMINMAX)

@@ -42,6 +42,8 @@
 #include "SDL_syswm.h"
 // Runtime's lean Windows include omits the COM bases required by DXC headers.
 #include <objbase.h>
+#elif defined(__APPLE__)
+#include "SDL_syswm.h"
 #endif
 #include "hle/rt64_application.h"
 #include "hle/rt64_state.h"
@@ -68,6 +70,18 @@
 namespace baseline {
 namespace {
 SDL_Window* window = nullptr;
+// SDL pumps the Cocoa event queue on the main thread only. On macOS main() pumps while the runtime runs on
+// another thread, which reads what was pumped; elsewhere the runtime thread polls (and pumps) itself.
+int next_event(SDL_Event* event) {
+#ifdef __APPLE__
+    return SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
+#else
+    return SDL_PollEvent(event);
+#endif
+}
+#ifdef __APPLE__
+SDL_MetalView metal_view = nullptr;  // The layer RT64's Metal backend draws into; destroyed before the window.
+#endif
 SDL_AudioDeviceID audio = 0;
 uint32_t audio_frequency = 0;
 std::mutex audio_mutex;
@@ -326,6 +340,9 @@ public:
         RT64::Application::Core core{};
 #if defined(_WIN32)
         core.window = handle.window;
+#elif defined(__APPLE__)
+        core.window.window = handle.window;
+        core.window.view = handle.view;
 #elif defined(__linux__)
         core.window = handle;
 #endif
@@ -934,6 +951,8 @@ ultramodern::renderer::WindowHandle open_devices(const std::filesystem::path& ro
 #endif
 #if defined(__linux__)
         | SDL_WINDOW_VULKAN
+#elif defined(__APPLE__)
+        | SDL_WINDOW_METAL
 #endif
         );
     if (!window) throw std::runtime_error(SDL_GetError());
@@ -1013,6 +1032,12 @@ ultramodern::renderer::WindowHandle open_devices(const std::filesystem::path& ro
         : std::chrono::steady_clock::time_point::max();
 #if defined(_WIN32)
     return {wm.info.win.window, GetCurrentThreadId()};
+#elif defined(__APPLE__)
+    SDL_SysWMinfo wm{}; SDL_VERSION(&wm.version);
+    if (!SDL_GetWindowWMInfo(window, &wm)) throw std::runtime_error(SDL_GetError());
+    if (!metal_view) metal_view = SDL_Metal_CreateView(window);
+    if (!metal_view) throw std::runtime_error(SDL_GetError());
+    return {wm.info.cocoa.window, SDL_Metal_GetLayer(metal_view)};
 #elif defined(__linux__)
     // The selected runtime and RT64 SDL Vulkan backend share this SDL owner.
     return window;
@@ -1065,6 +1090,9 @@ void close_devices() {
 #endif
     std::lock_guard guard(audio_mutex);
     if (audio) { SDL_CloseAudioDevice(audio); audio = 0; }
+#ifdef __APPLE__
+    if (metal_view) { SDL_Metal_DestroyView(metal_view); metal_view = nullptr; }
+#endif
     if (window) { SDL_DestroyWindow(window); window = nullptr; }
     SDL_Quit();
 }
@@ -1087,7 +1115,7 @@ void vi_complete() {
 void update_gfx(void*) {
 #if TOOIE_BASELINE_HOST
     SDL_Event event;
-    while(SDL_PollEvent(&event)) host::handle_event(event);
+    while(next_event(&event)) host::handle_event(event);
 #ifdef BASELINE_PLAYER
     {
         std::lock_guard guard(input_mutex);
@@ -1160,7 +1188,7 @@ void update_gfx(void*) {
 #else
     SDL_Event event;
     bool close = false, activity = false;
-    while (SDL_PollEvent(&event)) {
+    while (next_event(&event)) {
         if (event.type == SDL_QUIT) close = true;
         activity |= controller_activity(event);
         if (event.type == SDL_CONTROLLERDEVICEREMOVED && gamepad &&

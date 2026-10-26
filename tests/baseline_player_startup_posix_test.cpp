@@ -34,6 +34,11 @@ std::string read(const fs::path& path) {
     std::ifstream in(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(in), {}};
 }
+#ifdef __APPLE__
+const timespec& mtime_of(const struct stat& st) { return st.st_mtimespec; }
+#else
+const timespec& mtime_of(const struct stat& st) { return st.st_mtim; }
+#endif
 struct stat entry(const fs::path& path) { struct stat st{}; ::lstat(path.c_str(), &st); return st; }
 bool present(const fs::path& path) { struct stat st{}; return ::lstat(path.c_str(), &st) == 0; }
 bool same_inode(const struct stat& a, const struct stat& b) { return a.st_dev == b.st_dev && a.st_ino == b.st_ino; }
@@ -57,7 +62,7 @@ std::string fingerprint(const fs::path& root) {
     const auto describe = [&](const fs::path& path) {
         const auto st = entry(path);
         auto line = path.native() + ' ' + std::to_string(st.st_ino) + ' ' + std::to_string(st.st_size) + ' ' +
-            std::to_string(st.st_mtim.tv_sec) + '.' + std::to_string(st.st_mtim.tv_nsec) + ' ' + std::to_string(st.st_mode);
+            std::to_string(mtime_of(st).tv_sec) + '.' + std::to_string(mtime_of(st).tv_nsec) + ' ' + std::to_string(st.st_mode);
         if (S_ISREG(st.st_mode)) line += ' ' + read(path);
         lines.push_back(std::move(line));
     };
@@ -81,7 +86,11 @@ void unicode_arguments(const fs::path& base) {
     const auto profile = player::Profile::acquire(parsed.profile);
     CHECK(read(parsed.profile / marker_file) == marker && player::utf8(profile.root()) == folder);
     CHECK((entry(parsed.profile).st_mode & 0077) == 0); // A new root is private.
+#ifdef __APPLE__
+    CHECK(entry(profile.storage()).st_ino == entry(parsed.profile).st_ino); // No descriptor path: the held folder's own path.
+#else
     CHECK(profile.storage().native().rfind("/proc/self/fd/", 0) == 0);
+#endif
 }
 
 void two_process_lock(const fs::path& base) {
@@ -179,7 +188,7 @@ void import_rules(const fs::path& base) {
     CHECK(player::import_save(base / "source.bin", profile.storage()) == player::ImportResult::Imported);
     const auto source_after = entry(base / "source.bin");
     CHECK(read(root / "saves" / save_file) == bytes && read(base / "source.bin") == bytes);
-    CHECK(source_before.st_mtim.tv_nsec == source_after.st_mtim.tv_nsec && source_before.st_mtim.tv_sec == source_after.st_mtim.tv_sec);
+    CHECK(mtime_of(source_before).tv_nsec == mtime_of(source_after).tv_nsec && mtime_of(source_before).tv_sec == mtime_of(source_after).tv_sec);
     write(base / "other.bin", std::string(player::save_bytes, '\x22'));
     CHECK(player::import_save(base / "other.bin", profile.storage()) == player::ImportResult::DestinationNotEmpty);
     CHECK(read(root / "saves" / save_file) == bytes);
@@ -229,11 +238,14 @@ void rename_identity(const fs::path& base) {
     fs::rename(root, moved);
     fs::create_directory(root);
     write(root / "decoy.txt", "unrelated");
-    // Runtime-style joins through storage stay in the held folder.
+#ifndef __APPLE__
+    // Runtime-style joins through storage stay in the held folder. macOS has no path for a held
+    // descriptor, so there storage() names the folder as opened and a move while running is not followed.
     write(profile.storage() / "probe.txt", "held");
     CHECK(read(moved / "probe.txt") == "held" && !present(root / "probe.txt"));
     struct stat anchored{};
     CHECK(::stat(profile.storage().c_str(), &anchored) == 0 && same_inode(anchored, entry(moved)));
+#endif
     // Public-root profile work also uses the held folder, never the replacement.
     CHECK(player::import_save(base / "anchor-source.bin", profile.root()) == player::ImportResult::Imported);
     CHECK(present(moved / "saves" / save_file) && !present(root / "saves") && read(root / "decoy.txt") == "unrelated");

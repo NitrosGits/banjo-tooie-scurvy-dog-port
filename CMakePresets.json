@@ -167,6 +167,64 @@
         "lhs": "${hostSystemName}",
         "rhs": "Linux"
       }
+    },
+    {
+      "name": "macos-player",
+      "displayName": "Selected macOS arm64 player",
+      "description": "Selected player feature tuple on Apple Silicon. Shares the build folder name with windows-player because the guest preparation scripts write build/windows-dev; qualify its archive independently before linking.",
+      "inherits": "native-base",
+      "binaryDir": "${sourceDir}/build/windows-dev",
+      "cacheVariables": {
+        "TOOIE_BASELINE": "ON",
+        "TOOIE_BASELINE_BACKPACK621": "ON",
+        "TOOIE_BASELINE_BOOT_OBSERVER": "ON",
+        "TOOIE_BASELINE_BOOT_PI": "ON",
+        "TOOIE_BASELINE_CAMERA_CPU_OBSERVER": "OFF",
+        "TOOIE_BASELINE_CAMERA_IDENTITY": "ON",
+        "TOOIE_BASELINE_CAMERA_RUNTIME_OBSERVER": "OFF",
+        "TOOIE_BASELINE_CORE1_PUBLICATION": "ON",
+        "TOOIE_BASELINE_CORE1_REFERENCE": "${sourceDir}/build/windows-dev/baseline/core1-publication/core1-observation.bin",
+        "TOOIE_BASELINE_CORE2_REFERENCE": "${sourceDir}/build/windows-dev/baseline/core2-publication/core2-observation.bin",
+        "TOOIE_BASELINE_CPU625": "ON",
+        "TOOIE_BASELINE_EXTERNAL_WAIT_FIXTURE": "OFF",
+        "TOOIE_BASELINE_FATAL_IMPORTS": "recomp_syscall_handler;__osGetSR_recomp;__osSetSR_recomp;__osSiRawReadIo_recomp;__osSiRawWriteIo_recomp;osMapTLBRdb_recomp;__osGetCause_recomp;__osSiGetAccess_recomp;__osSiRawStartDma_recomp;__osSiRelAccess_recomp;osViGetCurrentLine_recomp;osPfsInit_recomp",
+        "TOOIE_BASELINE_FATAL_PROVIDERS": "boot___osException;boot_handle_CpU;boot___osDispatchThread;boot_osWritebackDCache;boot_osInvalICache;boot_osUnmapTLBAll;boot_osMapTLBRdb;boot___osGetCause;boot___osProbeTLB;func_8001DDC0;ovl_entrypoint_alternate",
+        "TOOIE_BASELINE_HEAP_PATCH": "ON",
+        "TOOIE_BASELINE_HONEY_EMIT": "OFF",
+        "TOOIE_BASELINE_HONEY_PATCH": "OFF",
+        "TOOIE_BASELINE_HOST": "ON",
+        "TOOIE_BASELINE_LIFECYCLE_FIXTURE": "OFF",
+        "TOOIE_BASELINE_NPC665": "ON",
+        "TOOIE_BASELINE_PLAYER_BOUNDARY": "ON",
+        "TOOIE_BASELINE_RENDERER_CANDIDATE_OUTPUT": "ON",
+        "TOOIE_BASELINE_RENDERER_COMPARISON": "OFF",
+        "TOOIE_BASELINE_RENDER_BRIDGE": "ON",
+        "TOOIE_BASELINE_RENDER_OBSERVER": "OFF",
+        "TOOIE_BASELINE_RT64_GENERIC_FIXES": "ON",
+        "TOOIE_BASELINE_SAVE_COMPOSITION": "ON",
+        "TOOIE_BASELINE_SAVE_DRAIN_FIXTURE": "OFF",
+        "TOOIE_BASELINE_SILO_ACQUISITION_OBSERVER": "OFF",
+        "TOOIE_BASELINE_SILO_CANDIDATE": "ON",
+        "TOOIE_BASELINE_SILO_FAMILY_OBSERVER": "OFF",
+        "TOOIE_BASELINE_SUCCESS_TRACE": "OFF",
+        "TOOIE_BASELINE_TERMINAL_FENCE": "ON",
+        "TOOIE_BASELINE_VI_CONTROLLER_CYCLE": "ON",
+        "TOOIE_BASELINE_PLAYER": "ON",
+        "TOOIE_NATIVE_HOST": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_PREFIX_PATH": "/opt/homebrew;/opt/homebrew/opt/openssl@3",
+        "TOOIE_BASELINE_MACHO_TOOLS_DIR": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
     }
   ],
   "buildPresets": [
@@ -205,6 +263,14 @@
     {
       "name": "linux-player",
       "configurePreset": "linux-player",
+      "targets": [
+        "TooieBaseline"
+      ],
+      "jobs": 6
+    },
+    {
+      "name": "macos-player",
+      "configurePreset": "macos-player",
       "targets": [
         "TooieBaseline"
       ],
